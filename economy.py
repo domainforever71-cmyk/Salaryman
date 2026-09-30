@@ -1,39 +1,8 @@
-"""economy.py - Astra's market layer: 5 stocks, 4 currencies, fees, inflation.
-
-Wire in AFTER init_world():
-
-    from economy import init_economy, cpi
-    import world
-    init_economy(app, login_required, current_user, get_or_create_save,
-                 extra_fee=lambda: world._rules()[1]["trade_fee"])
-
-Inspired by tycoon-style stock games: every stock has a small finite pool of
-available shares, a dividend countdown, and your buy average next to the live
-price. On top of that:
-
-  * FEES     - every trade pays a percentage fee (min 1 unit) plus the current
-               regime's trade levy; currency conversion pays a 1% spread. Fees
-               are destroyed (a money sink that fights inflation).
-  * CURRENCY - ASD is the home currency and IS GameSave.balance, so the rest of
-               the game keeps working untouched. VLT / KRN / DRX live in a
-               wallet table. Each stock is priced in its own currency, so to buy
-               it you must convert first (and pay the spread).
-  * INFLATION- each currency has its own daily inflation (tapering over time). A currency's exchange
-               rate drifts down as its inflation outruns ASD's, and the ASD
-               price index cpi() rises, which world.py applies to bail, app
-               prices, etc. Stocks partially hedge (beta 0.8) so holding shares
-               beats holding cash - but only if you beat the fees.
-
-Scale notes: prices and FX are PURE FUNCTIONS OF TIME (seeded sine mixes +
-hash jitter), so every worker process agrees with zero shared state and there
-is no tick thread to keep alive. The only mutable market state is the
-`stock_state.available` counter, changed by atomic conditional UPDATEs.
-"""
 import hashlib
 import math
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError
@@ -42,29 +11,24 @@ from models import db, GameSave, User
 from astra_net import find_user
 
 HOME = "ASD"
-STEP_S = 30                     # one price step
-# Launch date of THIS server's economy (set ECON_EPOCH=YYYY-MM-DD in .env; prices
-# are at their listed base on that day). Changing it later re-prices everything.
+STEP_S = 30
 ECON_EPOCH = datetime.fromisoformat(os.environ.get("ECON_EPOCH", "2026-09-28")).timestamp()
-INFLATION_TAPER_DAYS = 30       # inflation rate halves by day 30, thirds by day 60 ...
+INFLATION_TAPER_DAYS = 30
 TRADE_FEE_PCT = 0.005
 TRADE_FEE_MIN = 1.0
 CONVERT_SPREAD = 0.01
 MAX_TRADE = 1000
-DIV_CATCHUP_CAP = 48            # max unclaimed dividend intervals that accrue
-STOCK_BETA = 0.8                # how much of local-currency inflation stocks track
-SCARCITY_PREMIUM = 0.5          # price is up to +50% when the pool is empty
-SEND_FEE_PCT = 0.01             # player-to-player transfers
+DIV_CATCHUP_CAP = 48
+STOCK_BETA = 0.8
+SCARCITY_PREMIUM = 0.5
+SEND_FEE_PCT = 0.01
 SEND_FEE_MIN = 0.5
-SEND_LIMIT_ASD = 25000.0        # rolling 24h, in ASD-equivalent, scaled by the price index
-SAVINGS_CAP_ASD = 50000.0       # per currency, ASD-equivalent (savings interest is new money; cap the printing)
+SEND_LIMIT_ASD = 25000.0
+SAVINGS_CAP_ASD = 50000.0
 WITHDRAW_FEE_PCT = 0.005
-# Daily savings interest. Compare with CURRENCIES[*]['infl']: ASD/KRN/DRX savings LOSE to inflation
-# early on, VLT (the hard currency) gains. Picking where to park cash is the game.
 SAVINGS_RATE = {"ASD": 0.010, "VLT": 0.006, "KRN": 0.030, "DRX": 0.010}
 
 CURRENCIES = {
-    #        base rate in ASD, daily inflation, FX wobble
     "ASD": dict(name="Astra Dollar", rate=1.00, infl=0.020, wobble=0.00),
     "VLT": dict(name="Volta Credit", rate=1.80, infl=0.005, wobble=0.06),
     "KRN": dict(name="Kron",         rate=0.12, infl=0.060, wobble=0.10),
@@ -80,7 +44,6 @@ STOCKS = {
 }
 
 
-# ---- models ----------------------------------------------------------------
 class Wallet(db.Model):
     __tablename__ = "wallets"
     user_id = db.Column(db.Integer, primary_key=True)
@@ -93,7 +56,7 @@ class Holding(db.Model):
     user_id = db.Column(db.Integer, primary_key=True)
     symbol = db.Column(db.String(8), primary_key=True)
     shares = db.Column(db.Integer, default=0)
-    cost_total = db.Column(db.Float, default=0.0)      # what you paid for the shares held, excl. fees
+    cost_total = db.Column(db.Float, default=0.0)
     last_div_idx = db.Column(db.Integer, default=0)
 
 
@@ -104,11 +67,10 @@ class StockState(db.Model):
 
 
 class WalletTx(db.Model):
-    """Append-only ledger. Signed amount in `currency`; amount_asd is the ASD value at the time."""
     __tablename__ = "wallet_tx"
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, index=True, nullable=False)
-    kind = db.Column(db.String(12), index=True)   # convert buy sell dividend send receive save withdraw
+    kind = db.Column(db.String(12), index=True)
     currency = db.Column(db.String(4))
     amount = db.Column(db.Float)
     amount_asd = db.Column(db.Float, default=0.0)
@@ -124,13 +86,80 @@ class Savings(db.Model):
     last_accrual = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class MarketEvent(db.Model):
+    """Admin-made price shock (crash / boom). symbol is a ticker or "ALL".
+    Economy stocks (QUIK, NOVA...) follow the ramp/hold/recover curve; the legacy desk stocks
+    (TECH, OIL...) take the drop once, when the event starts (see app.py)."""
+    __tablename__ = "market_events"
+    id = db.Column(db.Integer, primary_key=True)
+    symbol = db.Column(db.String(8), nullable=False, index=True)
+    pct = db.Column(db.Float, nullable=False)
+    start_at = db.Column(db.DateTime, nullable=False, index=True)
+    ramp_s = db.Column(db.Integer, default=30)
+    hold_s = db.Column(db.Integer, default=600)
+    recover_s = db.Column(db.Integer, default=1800)
+    note = db.Column(db.String(160), default="")
+    created_by = db.Column(db.String(64))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    cancelled = db.Column(db.Boolean, default=False, index=True)
+    applied = db.Column(db.Boolean, default=False, index=True)
+
+
+_EVENT_CACHE = {"at": 0.0, "rows": []}
+EVENT_CACHE_TTL_S = 2.0
+
+
+def invalidate_events():
+    _EVENT_CACHE["at"] = 0.0
+
+
+def _active_events():
+    """Events that can still affect prices, cached a couple of seconds (price() is called a lot)."""
+    now = time.time()
+    if now - _EVENT_CACHE["at"] > EVENT_CACHE_TTL_S:
+        try:
+            horizon = datetime.utcnow() - timedelta(days=2)
+            rows = MarketEvent.query.filter(MarketEvent.cancelled.is_(False), MarketEvent.start_at > horizon).all()
+            _EVENT_CACHE["rows"] = [
+                (r.symbol, r.pct, r.start_at.replace(tzinfo=timezone.utc).timestamp(),
+                 r.ramp_s or 0, r.hold_s or 0, r.recover_s or 0) for r in rows]
+            _EVENT_CACHE["at"] = now
+        except Exception:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            _EVENT_CACHE["at"] = now - EVENT_CACHE_TTL_S + 0.5   # retry soon, keep the old list
+    return _EVENT_CACHE["rows"]
+
+
+def event_factor(pct, dt, ramp, hold, recover):
+    """Price multiplier dt seconds after an event starts: ramp to (1+pct), hold, then recover to 1."""
+    if dt < 0:
+        return 1.0
+    if ramp > 0 and dt < ramp:
+        return 1.0 + pct * (dt / float(ramp))
+    if dt < ramp + hold:
+        return 1.0 + pct
+    if recover > 0 and dt < ramp + hold + recover:
+        return 1.0 + pct * (1.0 - (dt - ramp - hold) / float(recover))
+    return 1.0
+
+
+def _shock(sym, t):
+    f = 1.0
+    for esym, pct, start, ramp, hold, recover in _active_events():
+        if esym == sym or esym == "ALL":
+            f *= event_factor(pct, t - start, ramp, hold, recover)
+    return max(0.01, f)
+
+
 class EconState(db.Model):
     __tablename__ = "econ_state"
     id = db.Column(db.Integer, primary_key=True)
     fees_destroyed = db.Column(db.Float, default=0.0)
 
 
-# ---- deterministic market math ---------------------------------------------
 def _hours():
     return max(0.0, (time.time() - ECON_EPOCH) / 3600.0)
 
@@ -140,12 +169,10 @@ def _days():
 
 
 def _noise(seed, step):
-    """Slow seeded sine mix + per-step hash jitter, roughly in [-1, 1]. Same
-    (seed, step) -> same value on every server, forever."""
     h = hashlib.sha256(seed.encode()).digest()
     total = 0.0
     for i in range(4):
-        period = 20 + h[i] * 0.8                     # 20..224 steps
+        period = 20 + h[i] * 0.8
         phase = h[4 + i] / 255.0 * 2 * math.pi
         total += (0.5 ** i) * math.sin(2 * math.pi * step / period + phase)
     total /= 1.875
@@ -155,23 +182,18 @@ def _noise(seed, step):
 
 
 def cpi(cur=HOME, at=None):
-    """Price index: 1.0 at the epoch. The daily inflation rate tapers hyperbolically
-    (r(d) = infl * T / (T + d)), so cash keeps losing value but a months-long
-    server never ends with a worthless currency. Closed form:
-    cpi = ((T + d) / T) ** (T * ln(1 + infl))."""
     days = _days() if at is None else max(0.0, (at - ECON_EPOCH) / 86400.0)
     T = INFLATION_TAPER_DAYS
     return ((T + days) / T) ** (T * math.log(1 + CURRENCIES[cur]["infl"]))
 
 
 def fx(cur, step=None):
-    """ASD value of one unit of `cur`."""
     if cur == HOME:
         return 1.0
     c = CURRENCIES[cur]
     step = int(time.time() // STEP_S) if step is None else step
     t = step * STEP_S + 0.0
-    drift = (cpi(HOME, t) / cpi(cur, t))              # higher local inflation -> weaker currency
+    drift = (cpi(HOME, t) / cpi(cur, t))
     return max(1e-6, c["rate"] * drift * math.exp(c["wobble"] * _noise("fx:" + cur, step)))
 
 
@@ -184,16 +206,16 @@ def price(sym, available, step=None):
     step = int(time.time() // STEP_S) if step is None else step
     t = step * STEP_S + 0.0
     local = cpi(s["cur"], t) ** STOCK_BETA
-    return round(s["base"] * math.exp(s["vol"] * _noise("px:" + sym, step)) * local * _pool_mult(available, s["float"]), 4)
+    px = s["base"] * math.exp(s["vol"] * _noise("px:" + sym, step)) * local * _pool_mult(available, s["float"])
+    return round(max(0.0001, px * _shock(sym, t)), 4)
 
 
 def _div_per_share(sym, px, available):
     s = STOCKS[sym]
     issued_frac = 1 - available / float(s["float"])
-    return px * s["yld"] * max(0.3, 1 - 0.7 * issued_frac)     # dilution: more holders, thinner yield
+    return px * s["yld"] * max(0.3, 1 - 0.7 * issued_frac)
 
 
-# ---- init ------------------------------------------------------------------
 def init_economy(app, login_required, current_user, get_or_create_save, extra_fee=lambda: 0.0,
                  can_transfer=lambda: True):
     bp = Blueprint("economy", __name__)
@@ -210,7 +232,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
         except IntegrityError:
             db.session.rollback()
 
-    # -- atomic money (caller commits, so multi-step trades are all-or-nothing)
     def _adjust(uid, cur, delta):
         if cur == HOME:
             q = GameSave.query.filter(GameSave.user_id == uid)
@@ -263,7 +284,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
                 h = db.session.get(Holding, (uid, sym))
         return h
 
-    # ------------------------------------------------------------------ state
     @bp.route("/api/econ/state")
     @login_required
     def econ_state():
@@ -276,7 +296,7 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
         stocks, portfolio_home = [], 0.0
         for sym, s in STOCKS.items():
             px = price(sym, avail[sym])
-            prev = price(sym, avail[sym], step - 10)         # ~5 min ago, for the +/- arrow
+            prev = price(sym, avail[sym], step - 10)
             h = holdings.get(sym)
             shares = h.shares if h else 0
             idx = int(now // s["div_s"])
@@ -314,7 +334,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
         return jsonify(success=True, symbol=sym, step_s=STEP_S,
                        series=[price(sym, av, step - i) for i in range(n - 1, -1, -1)])
 
-    # ---------------------------------------------------------------- convert
     @bp.route("/api/econ/convert", methods=["POST"])
     @login_required
     def econ_convert():
@@ -340,7 +359,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
         db.session.commit()
         return jsonify(success=True, msg=f"Converted {amt:,.2f} {src} -> {got:,.2f} {dst} (1% spread).", received=got)
 
-    # -------------------------------------------------------------- buy / sell
     def _parse_trade():
         d = request.get_json(silent=True) or {}
         sym = d.get("symbol")
@@ -411,7 +429,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
         return jsonify(success=True, price=px, fee=fee, net=net, realized_pl=pl,
                        msg=f"Sold {n} {sym} @ {px:,.4f}. Realized {'+' if pl >= 0 else ''}{pl:,.2f} {s['cur']} after fees.")
 
-    # -------------------------------------------------------------- dividends
     @bp.route("/api/econ/claim", methods=["POST"])
     @login_required
     def econ_claim():
@@ -428,7 +445,6 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
             if owed <= 0:
                 continue
             amt = round(h.shares * _div_per_share(h.symbol, price(h.symbol, avail[h.symbol]), avail[h.symbol]) * owed, 2)
-            # conditional advance: a double-click / racing tab can't claim twice
             if Holding.query.filter(Holding.user_id == user.id, Holding.symbol == h.symbol,
                                     Holding.last_div_idx == h.last_div_idx).update(
                     {Holding.last_div_idx: idx}, synchronize_session=False) == 1 and amt > 0:
@@ -440,12 +456,7 @@ def init_economy(app, login_required, current_user, get_or_create_save, extra_fe
             return jsonify(success=False, msg="No dividends due yet."), 400
         return jsonify(success=True, paid=paid, msg="Dividends paid: " + ", ".join(f"{v:,.2f} {k}" for k, v in paid.items()))
 
-    # ====================================================================
-    # WALLET (lives inside the BANK app): ledger, send, savings, net worth
-    # ====================================================================
     def _accrue(uid, cur):
-        """Lazy compounding. The conditional UPDATE on last_accrual means two racing
-        requests can't both pay the same interest."""
         row = db.session.get(Savings, (uid, cur))
         if not row or (row.principal or 0) <= 0:
             return row

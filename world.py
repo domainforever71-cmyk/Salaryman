@@ -1,26 +1,3 @@
-"""world.py - Astra "world layer": political regimes, crime & justice, BLABBER
-(anonymous parody social), NOTEPAD PRO (paid app), signed stats + sharing,
-and admin cheat-review tools.
-
-Wire it in with two lines in app.py, AFTER login_required / admin_required /
-current_user / get_or_create_save / market_state are defined:
-
-    from world import init_world
-    init_world(app, login_required, admin_required, current_user,
-               get_or_create_save, market_state)
-
-Design rules (these are what make it hold up with thousands of players):
-  * Every balance change is ONE atomic SQL UPDATE (see _adjust_balance), never
-    read-modify-write in Python, so two requests can't double-spend.
-  * Shared state (regime, votes, jail) lives in the database, not in process
-    memory, so it stays correct across multiple server workers.
-  * Anything global (wealth redistribution) is claimed with an atomic
-    "UPDATE ... WHERE last_run < cutoff" so exactly one worker runs it.
-  * Feeds are cursor-paginated; hot columns are indexed.
-  * There is no hardcoded admin account. Admin = User.is_admin (see
-    admin_tools.py). ADMIN_BOOTSTRAP_USERNAME in .env can flip the flag on an
-    account that ALREADY EXISTS at boot - register first, then start the server.
-"""
 import hashlib
 import hmac
 import json
@@ -37,9 +14,6 @@ from models import db, User, GameSave, Report
 from astra_net import find_user
 
 
-# =============================================================================
-# Rules tables
-# =============================================================================
 REGIMES = {
     "capitalism": dict(
         label="Free Market Republic", tax_rate=0.04, allow_player_trading=True,
@@ -63,7 +37,7 @@ REGIMES = {
         blurb="Crime is policed hard, a 3% trade levy applies, and BLABBER anonymity is switched off."),
 }
 DEFAULT_REGIME = "capitalism"
-REGIME_COOLDOWN_MIN = 60          # min real minutes between regime changes
+REGIME_COOLDOWN_MIN = 60
 REGIME_VOTE_WINDOW_H = 24
 REDISTRIBUTION_EVERY_MIN = 10
 
@@ -80,7 +54,6 @@ WANTED_DECAY_PER_MIN = 0.1
 BAIL_PER_MINUTE = 150.0
 JAIL_CAP_MIN = 180
 
-# Server actions blocked while jailed (reading, notes, BLABBER, reports stay open).
 JAIL_BLOCKED_PREFIXES = ("/api/wallet/", "/api/econ/", "/api/game/", "/api/work/", "/api/exchange/",
                          "/api/coop/trade_share", "/api/bots/dial", "/api/hire/")
 TRADE_PREFIXES = ("/api/exchange/",)
@@ -95,9 +68,6 @@ BLABBER_AUTOHIDE_REPORTS = 3
 FLAG_TERMS = [t.strip().lower() for t in os.environ.get("BLABBER_FLAG_TERMS", "").split(",") if t.strip()]
 
 
-# =============================================================================
-# Models
-# =============================================================================
 class WorldState(db.Model):
     __tablename__ = "world_state"
     id = db.Column(db.Integer, primary_key=True)
@@ -129,7 +99,7 @@ class Offense(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, index=True, nullable=False)
     crime = db.Column(db.String(24))
-    outcome = db.Column(db.String(12))       # success | fined | jailed
+    outcome = db.Column(db.String(12))
     amount = db.Column(db.Float, default=0.0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
@@ -175,14 +145,13 @@ class SharedItem(db.Model):
     code = db.Column(db.String(16), primary_key=True)
     owner_id = db.Column(db.Integer, index=True, nullable=False)
     owner_name = db.Column(db.String(64))
-    kind = db.Column(db.String(12))          # note | stats
+    kind = db.Column(db.String(12))
     payload = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, index=True)
 
 
 class AdminAction(db.Model):
-    """Audit trail: every admin power that touches a player is logged here."""
     __tablename__ = "admin_actions"
     id = db.Column(db.Integer, primary_key=True)
     admin_name = db.Column(db.String(64))
@@ -192,15 +161,138 @@ class AdminAction(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
+class Announcement(db.Model):
+    __tablename__ = "announcements"
+    id = db.Column(db.Integer, primary_key=True)
+    author_name = db.Column(db.String(64))
+    body = db.Column(db.String(500), nullable=False)
+    level = db.Column(db.String(8), default="info")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    expires_at = db.Column(db.DateTime, index=True)
+    retracted = db.Column(db.Boolean, default=False)
+
+
+class AdminEvent(db.Model):
+    """A live event an admin fires now or schedules: stimulus, levy, raffle."""
+    __tablename__ = "admin_events"
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(16), nullable=False)
+    amount = db.Column(db.Float, default=0.0)      # ASD (stimulus / raffle prize)
+    pct = db.Column(db.Float, default=0.0)         # fraction (levy)
+    winners = db.Column(db.Integer, default=0)     # raffle
+    note = db.Column(db.String(160), default="")
+    start_at = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    applied = db.Column(db.Boolean, default=False)
+    cancelled = db.Column(db.Boolean, default=False)
+    result = db.Column(db.String(300), default="")
+    created_by = db.Column(db.String(64))
+
+
+class AdminFlag(db.Model):
+    """A timed world switch. Right now: name='halt' (trading halt)."""
+    __tablename__ = "admin_flags"
+    name = db.Column(db.String(24), primary_key=True)
+    until = db.Column(db.DateTime)
+    reason = db.Column(db.String(160), default="")
+    set_by = db.Column(db.String(64))
+
+
+LIVE_KINDS = ("stimulus", "levy", "raffle")
+LIVE_MAX_PER_PLAYER = 1_000_000.0
+LIVE_MAX_LEVY = 0.5
+LIVE_MAX_WINNERS = 100
+HALT_PREFIXES = ("/api/exchange/", "/api/game/trade_share", "/api/coop/trade_share")
+
+
+def halt_status():
+    """(seconds_left, reason) while a trading halt is on, else (0, '')."""
+    f = db.session.get(AdminFlag, "halt")
+    if not f or not f.until:
+        return 0, ""
+    left = int((f.until - datetime.utcnow()).total_seconds())
+    return (left, f.reason or "") if left > 0 else (0, "")
+
+
+def _system_announce(body, level="info", hours=6):
+    db.session.add(Announcement(author_name="SYSTEM", body=body[:ANNOUNCE_MAX_CHARS], level=level,
+                                expires_at=datetime.utcnow() + timedelta(hours=hours)))
+    db.session.commit()
+
+
+def run_live_event(ev):
+    """Carry out one live event on the active players. Returns a short result line."""
+    active = GameSave.query.filter(GameSave.active.is_(True))
+    ids = [r[0] for r in db.session.query(GameSave.user_id).filter(GameSave.active.is_(True)).all()]
+    if not ids:
+        return "No active players - nothing happened."
+    if ev.kind == "stimulus":
+        active.update({GameSave.balance: GameSave.balance + ev.amount}, synchronize_session=False)
+        db.session.commit()
+        msg = ev.note or f"Stimulus: every active operator receives {ev.amount:,.0f} ASD."
+        _system_announce(msg)
+        return f"Paid {ev.amount:,.2f} ASD to {len(ids)} players ({ev.amount * len(ids):,.0f} total)."
+    if ev.kind == "levy":
+        before = db.session.query(func.coalesce(func.sum(GameSave.balance), 0.0)).filter(
+            GameSave.active.is_(True)).scalar() or 0.0
+        active.update({GameSave.balance: GameSave.balance * (1.0 - ev.pct)}, synchronize_session=False)
+        db.session.commit()
+        msg = ev.note or f"Emergency levy: {ev.pct * 100:.0f}% of every active balance has been collected."
+        _system_announce(msg, "warn")
+        return f"Collected {before * ev.pct:,.0f} ASD from {len(ids)} players."
+    if ev.kind == "raffle":
+        n = min(max(1, ev.winners or 1), len(ids))
+        names = []
+        for uid in random.sample(ids, n):
+            _adjust_balance(uid, ev.amount)
+            u = db.session.get(User, uid)
+            names.append(u.username if u else str(uid))
+        shown = ", ".join(names[:10]) + (f" +{len(names) - 10} more" if len(names) > 10 else "")
+        msg = ev.note or f"Raffle! {ev.amount:,.0f} ASD each to: {shown}."
+        _system_announce(msg)
+        return f"{n} winner(s) x {ev.amount:,.0f} ASD: {shown}"
+    return "unknown event kind"
+
+
+def process_due_live_events():
+    """Called from the market loop: fire every live event whose time has come."""
+    due = AdminEvent.query.filter(AdminEvent.applied.is_(False), AdminEvent.cancelled.is_(False),
+                                  AdminEvent.start_at <= datetime.utcnow()).order_by(AdminEvent.id).limit(10).all()
+    for ev in due:
+        ev.applied = True
+        db.session.commit()            # claim first so a slow run can't fire twice
+        try:
+            ev.result = run_live_event(ev)[:300]
+        except Exception as exc:
+            db.session.rollback()
+            ev.result = f"failed: {exc}"[:300]
+        db.session.commit()
+    return len(due)
+
+
+ANNOUNCE_LEVELS = ("info", "warn", "urgent")
+ANNOUNCE_MAX_CHARS = 500
+ANNOUNCE_MAX_HOURS = 24 * 30
+ADMIN_ADJUST_MAX = 10_000_000.0
+
+
+def active_announcements_query():
+    return Announcement.query.filter(
+        Announcement.retracted.is_(False),
+        db.or_(Announcement.expires_at.is_(None), Announcement.expires_at > datetime.utcnow()))
+
+
+def latest_announcement_id():
+    row = db.session.query(func.max(Announcement.id)).filter(
+        Announcement.retracted.is_(False),
+        db.or_(Announcement.expires_at.is_(None), Announcement.expires_at > datetime.utcnow())).scalar()
+    return row or 0
+
+
 def _now():
     return datetime.utcnow()
 
 
 def _adjust_balance(user_id, delta):
-    """Atomic. Negative deltas succeed only if the player can afford them."""
     q = GameSave.query.filter(GameSave.user_id == user_id)
     if delta < 0:
         q = q.filter(GameSave.balance >= -delta)
@@ -210,7 +302,6 @@ def _adjust_balance(user_id, delta):
 
 
 def _take_up_to(user_id, amount):
-    """Atomic fine: removes min(amount, balance) and returns what was taken."""
     before = db.session.query(GameSave.balance).filter(GameSave.user_id == user_id).scalar() or 0.0
     taken = max(0.0, min(amount, before))
     GameSave.query.filter(GameSave.user_id == user_id).update(
@@ -275,9 +366,6 @@ def _clean(s, n):
     return "".join(ch for ch in str(s or "") if ch == "\n" or ch >= " ")[:n].strip()
 
 
-# =============================================================================
-# init
-# =============================================================================
 def init_world(app, login_required, admin_required, current_user, get_or_create_save, market_state=None,
                price_index=lambda: 1.0):
     bp = Blueprint("world", __name__)
@@ -294,7 +382,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
                 db.session.commit()
                 app.logger.warning("ADMIN_BOOTSTRAP_USERNAME: granted admin to %r. Remove it from .env now.", boot_name)
 
-    # ---- global request gate: jail + regime trading ban ---------------------
     @app.before_request
     def _world_gate():
         from flask import session
@@ -309,13 +396,17 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
             if left > 0:
                 return jsonify(success=False, jailed=True, seconds_left=left,
                                msg=f"You are in custody for another {left // 60}m {left % 60}s. Pay bail in CIVICS."), 403
+        if path.startswith(HALT_PREFIXES):
+            left, why = halt_status()
+            if left > 0:
+                return jsonify(success=False, halted=True, seconds_left=left,
+                               msg=f"Trading is halted for another {left // 60}m {left % 60}s" + (f": {why}" if why else ".")), 403
         if path.startswith(TRADE_PREFIXES):
             _, rules = _rules()
             if not rules["allow_player_trading"]:
                 return jsonify(success=False, msg="Player-to-player trading is banned under the current regime."), 403
         return None
 
-    # ---- lazy, single-winner redistribution ---------------------------------
     def _maybe_redistribute():
         name, rules = _rules()
         if rules["redistribution_rate"] <= 0:
@@ -369,9 +460,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
                 _apply_regime(leader)
         return tally, quorum
 
-    # ========================================================================
-    # CIVICS: state, regime vote, crime, bail
-    # ========================================================================
     @bp.route("/api/world/state")
     @login_required
     def world_state():
@@ -423,7 +511,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         if _jail_seconds_left(user.id) > 0:
             return jsonify(success=False, msg="You're in custody."), 403
         rec = _record(user.id)
-        # Atomic cooldown claim: only one request per player per window wins.
         cutoff = _now() - timedelta(seconds=CRIME_COOLDOWN_S)
         won = CriminalRecord.query.filter(
             CriminalRecord.user_id == user.id,
@@ -484,9 +571,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         db.session.commit()
         return jsonify(success=True, msg=f"Bail paid: ${bail:,.2f}. You're free.")
 
-    # ========================================================================
-    # BLABBER
-    # ========================================================================
     def _handle(post, viewer_id, is_admin=False):
         if post.anonymous:
             day = post.created_at.strftime("%Y%m%d")
@@ -581,9 +665,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
             db.session.commit()
         return jsonify(success=True, msg="Reported. An admin will review it.")
 
-    # ========================================================================
-    # NOTEPAD PRO (paid)
-    # ========================================================================
     def _np():
         return round(NOTES_PRO_PRICE * price_index(), 2)
 
@@ -620,7 +701,7 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
-            _adjust_balance(u.id, price_now)   # refund a racing double-buy
+            _adjust_balance(u.id, price_now)
             return jsonify(success=False, msg="Already licensed."), 400
         return jsonify(success=True, msg="NOTEPAD PRO unlocked.")
 
@@ -696,9 +777,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         db.session.commit()
         return jsonify(success=True, added=added, msg=f"Imported {added} note(s).")
 
-    # ========================================================================
-    # Stats (signed) + sharing
-    # ========================================================================
     def _stats_snapshot(user, save):
         rec = _record(user.id)
         return dict(
@@ -777,9 +855,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         db.session.commit()
         return jsonify(success=True, msg="Note imported.")
 
-    # ========================================================================
-    # ADMIN
-    # ========================================================================
     def _log_admin(action, target, detail=""):
         db.session.add(AdminAction(admin_name=current_user().username, action=action, target=str(target)[:64], detail=detail[:300]))
         db.session.commit()
@@ -832,7 +907,6 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
     @bp.route("/api/admin/cheatcheck")
     @admin_required
     def admin_cheatcheck():
-        """Leads, not verdicts: outliers vs the population plus report/crime context."""
         avg = db.session.query(func.avg(GameSave.balance)).filter(GameSave.active.is_(True)).scalar() or 1
         rows = db.session.query(GameSave, User).join(User, User.id == GameSave.user_id) \
             .filter(GameSave.active.is_(True)).order_by(GameSave.balance.desc()).limit(25).all()
@@ -842,7 +916,7 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
             ratio = (s.balance or 0) / avg if avg else 0
             crimes_24h = Offense.query.filter(Offense.user_id == u.id, Offense.created_at >= day_ago, Offense.outcome == "success").count()
             reps = Report.query.filter_by(target_username=u.username, status="open").count()
-            try:   # money-laundering / multi-account lead: how much they pushed to other players today
+            try:
                 from economy import WalletTx
                 sent = -(db.session.query(func.coalesce(func.sum(WalletTx.amount_asd), 0.0)).filter(
                     WalletTx.user_id == u.id, WalletTx.kind == "send", WalletTx.created_at >= day_ago).scalar() or 0.0)
@@ -860,6 +934,416 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         rows = AdminAction.query.order_by(AdminAction.id.desc()).limit(100).all()
         return jsonify(success=True, actions=[dict(admin=r.admin_name, action=r.action, target=r.target, detail=r.detail,
                                                    at=r.created_at.strftime("%Y-%m-%d %H:%M")) for r in rows])
+
+    def _ann_dict(a):
+        return dict(id=a.id, author=a.author_name, body=a.body, level=a.level,
+                    at=a.created_at.strftime("%Y-%m-%d %H:%M") if a.created_at else "",
+                    expires=a.expires_at.strftime("%Y-%m-%d %H:%M") if a.expires_at else None,
+                    retracted=bool(a.retracted))
+
+    @bp.route("/api/admin/announce", methods=["POST"])
+    @admin_required
+    def admin_announce():
+        d = request.get_json(silent=True) or {}
+        body = " ".join(str(d.get("body") or "").split())
+        if not body:
+            return jsonify(success=False, msg="Write a message first."), 400
+        if len(body) > ANNOUNCE_MAX_CHARS:
+            return jsonify(success=False, msg=f"Keep it under {ANNOUNCE_MAX_CHARS} characters."), 400
+        level = d.get("level") if d.get("level") in ANNOUNCE_LEVELS else "info"
+        try:
+            hours = float(d.get("hours", 24))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Invalid duration."), 400
+        hours = min(max(hours, 0.25), ANNOUNCE_MAX_HOURS)
+        me = current_user()
+        recent = Announcement.query.filter(
+            Announcement.author_name == me.username,
+            Announcement.created_at > datetime.utcnow() - timedelta(seconds=5)).count()
+        if recent:
+            return jsonify(success=False, msg="Slow down - wait a few seconds between announcements."), 429
+        a = Announcement(author_name=me.username, body=body, level=level,
+                         expires_at=datetime.utcnow() + timedelta(hours=hours))
+        db.session.add(a)
+        db.session.commit()
+        _log_admin("announce", a.id, f"[{level}] {body}"[:300])
+        return jsonify(success=True, msg="Announcement sent to all players.", announcement=_ann_dict(a))
+
+    @bp.route("/api/admin/announcements")
+    @admin_required
+    def admin_announcements():
+        rows = Announcement.query.order_by(Announcement.id.desc()).limit(30).all()
+        now = datetime.utcnow()
+        out = []
+        for a in rows:
+            row = _ann_dict(a)
+            row["active"] = (not a.retracted) and (a.expires_at is None or a.expires_at > now)
+            out.append(row)
+        return jsonify(success=True, announcements=out)
+
+    @bp.route("/api/admin/announce/<int:aid>/retract", methods=["POST"])
+    @admin_required
+    def admin_announce_retract(aid):
+        a = db.session.get(Announcement, aid)
+        if not a:
+            return jsonify(success=False, msg="No such announcement."), 404
+        a.retracted = True
+        db.session.commit()
+        _log_admin("announce_retract", aid)
+        return jsonify(success=True, msg="Retracted. Players who haven't seen it yet won't.")
+
+    @bp.route("/api/admin/stats")
+    @admin_required
+    def admin_stats():
+        name, rules = _rules()
+        avg = db.session.query(func.avg(GameSave.balance)).filter(GameSave.active.is_(True)).scalar() or 0
+        return jsonify(
+            success=True, regime=name, regime_label=rules["label"],
+            accounts=db.session.query(func.count(User.id)).scalar() or 0,
+            active_players=_active_count(),
+            admins=db.session.query(func.count(User.id)).filter(User.is_admin.is_(True)).scalar() or 0,
+            banned=db.session.query(func.count(User.id)).filter(User.is_banned.is_(True)).scalar() or 0,
+            open_reports=Report.query.filter_by(status="open").count(),
+            jailed=CriminalRecord.query.filter(CriminalRecord.jail_until > _now()).count(),
+            active_announcements=active_announcements_query().count(),
+            avg_balance=round(avg, 2))
+
+    @bp.route("/api/admin/whois/<path:username>")
+    @admin_required
+    def admin_whois(username):
+        u = find_user(username)
+        if not u:
+            return jsonify(success=False, msg="No such account."), 404
+        save = GameSave.query.filter_by(user_id=u.id).first()
+        rec = db.session.get(CriminalRecord, u.id)
+        left = _jail_seconds_left(u.id)
+        return jsonify(
+            success=True, username=u.username, id=u.id,
+            created=u.created_at.strftime("%Y-%m-%d") if u.created_at else None,
+            is_admin=bool(u.is_admin), is_banned=bool(u.is_banned), ban_reason=u.ban_reason,
+            banned_by=u.banned_by,
+            open_reports=Report.query.filter_by(target_username=u.username, status="open").count(),
+            total_reports=Report.query.filter_by(target_username=u.username).count(),
+            has_save=bool(save), active=bool(save and save.active),
+            job_status=save.job_status if save else None, job_title=save.job_title if save else None,
+            company=save.company_name if save else None,
+            salary=round(save.salary or 0, 2) if save else None,
+            balance=round(save.balance or 0, 2) if save else None,
+            convictions=(rec.convictions or 0) if rec else 0,
+            wanted=round(_current_wanted(rec), 1) if rec else 0,
+            jail_seconds_left=left)
+
+    @bp.route("/api/admin/economy/adjust", methods=["POST"])
+    @admin_required
+    def admin_adjust_balance():
+        d = request.get_json(silent=True) or {}
+        u = find_user(str(d.get("username") or ""))
+        if not u:
+            return jsonify(success=False, msg="No such account."), 404
+        try:
+            amount = float(d.get("amount"))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Amount must be a number."), 400
+        if amount != amount or amount in (float("inf"), float("-inf")) or amount == 0:
+            return jsonify(success=False, msg="Amount must be a non-zero number."), 400
+        if abs(amount) > ADMIN_ADJUST_MAX:
+            return jsonify(success=False, msg=f"Limit is {ADMIN_ADJUST_MAX:,.0f} ASD per command."), 400
+        reason = _clean(d.get("reason"), 120)
+        if not reason:
+            return jsonify(success=False, msg="A reason is required (it goes in the audit log)."), 400
+        if not GameSave.query.filter_by(user_id=u.id).first():
+            return jsonify(success=False, msg=f"{u.username} has not started a career yet."), 400
+        amount = round(amount, 2)
+        if amount > 0:
+            _adjust_balance(u.id, amount)
+            moved = amount
+        else:
+            moved = -_take_up_to(u.id, -amount)
+        new_bal = db.session.query(GameSave.balance).filter(GameSave.user_id == u.id).scalar() or 0.0
+        _log_admin("give" if amount > 0 else "take", u.username, f"{moved:+,.2f} ASD: {reason}")
+        return jsonify(success=True, balance=round(new_bal, 2),
+                       msg=f"{u.username}: {moved:+,.2f} ASD (balance now {new_bal:,.2f}).")
+
+    @bp.route("/api/admin/world/regime", methods=["POST"])
+    @admin_required
+    def admin_set_regime():
+        d = request.get_json(silent=True) or {}
+        choice = d.get("regime")
+        if choice not in REGIMES:
+            return jsonify(success=False, msg="Unknown regime. Options: " + ", ".join(REGIMES)), 400
+        w = _world()
+        old = w.regime
+        w.regime, w.regime_changed_at = choice, _now()
+        db.session.commit()
+        _apply_regime(choice)
+        _log_admin("set_regime", choice, f"was {old}")
+        return jsonify(success=True, msg=f"Regime set to {REGIMES[choice]['label']}.")
+
+    # ---- market shocks (crash / boom), instant or scheduled ----
+    MARKET_MAX_PENDING = 50
+    MARKET_MAX_AHEAD_DAYS = 30
+
+    def _market_symbols():
+        from economy import STOCKS as ECON_STOCKS
+        from game_data import STOCKS as DESK_STOCKS
+        return list(ECON_STOCKS), list(DESK_STOCKS)
+
+    def _event_dict(e, now):
+        total = (e.ramp_s or 0) + (e.hold_s or 0) + (e.recover_s or 0)
+        if e.cancelled:
+            status = "cancelled"
+        elif now < e.start_at:
+            status = "scheduled"
+        elif now < e.start_at + timedelta(seconds=total):
+            status = "active"
+        else:
+            status = "ended"
+        return dict(id=e.id, symbol=e.symbol, pct=round(e.pct * 100, 1), status=status,
+                    start=e.start_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    starts_in_s=max(0, int((e.start_at - now).total_seconds())),
+                    ramp_s=e.ramp_s, hold_s=e.hold_s, recover_s=e.recover_s,
+                    note=e.note or "", by=e.created_by)
+
+    @bp.route("/api/admin/market/symbols")
+    @admin_required
+    def admin_market_symbols():
+        econ, desk = _market_symbols()
+        return jsonify(success=True, economy=econ, desk=desk)
+
+    @bp.route("/api/admin/market/event", methods=["POST"])
+    @admin_required
+    def admin_market_event():
+        from economy import MarketEvent, invalidate_events
+        d = request.get_json(silent=True) or {}
+        econ, desk = _market_symbols()
+        symbol = str(d.get("symbol") or "").strip().upper()
+        if symbol == "ALL":
+            pass
+        elif symbol not in econ and symbol not in desk:
+            return jsonify(success=False, msg="Unknown symbol. Use one of: ALL, " + ", ".join(econ + desk)), 400
+        try:
+            pct = float(d.get("pct"))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Percent must be a number."), 400
+        if pct != pct or not (1 <= abs(pct) <= 300) or (pct < 0 and pct < -95):
+            return jsonify(success=False, msg="Crash: 1 to 95 percent. Boom: 1 to 300 percent."), 400
+
+        def secs(key, default, lo, hi):
+            v = d.get(key)
+            if v is None or v == "":
+                return default
+            v = int(float(v))
+            if not lo <= v <= hi:
+                raise ValueError(f"{key} must be between {lo} and {hi} seconds.")
+            return v
+        try:
+            ramp = secs("ramp_s", 30, 0, 3600)
+            hold = secs("hold_s", 600, 0, 86400)
+            recover = secs("recover_s", 1800, 0, 86400)
+            delay = secs("delay_s", 0, 0, MARKET_MAX_AHEAD_DAYS * 86400)
+        except (TypeError, ValueError) as e:
+            return jsonify(success=False, msg=str(e) if "must be" in str(e) else "Durations must be numbers."), 400
+        if ramp + hold + recover < 1:
+            return jsonify(success=False, msg="The event needs some duration (ramp, hold or recover)."), 400
+
+        now = _now()
+        start = now + timedelta(seconds=delay)
+        raw = str(d.get("start_at") or "").strip()
+        if raw:
+            try:
+                start = datetime.fromisoformat(raw.replace("Z", "+00:00").replace(" ", "T"))
+                if start.tzinfo is not None:
+                    from datetime import timezone
+                    start = start.astimezone(timezone.utc).replace(tzinfo=None)
+            except ValueError:
+                return jsonify(success=False, msg="Bad date. Use UTC like 2026-10-01T18:00."), 400
+            if start < now - timedelta(seconds=60):
+                return jsonify(success=False, msg="That time is in the past."), 400
+            if start > now + timedelta(days=MARKET_MAX_AHEAD_DAYS):
+                return jsonify(success=False, msg=f"Schedule at most {MARKET_MAX_AHEAD_DAYS} days ahead."), 400
+        start = max(start, now)
+
+        pending = MarketEvent.query.filter(
+            MarketEvent.cancelled.is_(False), MarketEvent.start_at > now - timedelta(days=1)).count()
+        if pending >= MARKET_MAX_PENDING:
+            return jsonify(success=False, msg="Too many scheduled events. Cancel some first (/r market)."), 400
+
+        me = current_user()
+        ev = MarketEvent(symbol=symbol, pct=round(pct / 100.0, 4), start_at=start, ramp_s=ramp, hold_s=hold,
+                         recover_s=recover, note=_clean(d.get("note"), 160), created_by=me.username)
+        db.session.add(ev)
+        db.session.commit()
+        invalidate_events()
+        kind = "crash" if pct < 0 else "boom"
+        _log_admin("market_" + kind, ev.id, f"{symbol} {pct:+.1f}% start {start:%Y-%m-%d %H:%M} UTC "
+                   f"ramp {ramp}s hold {hold}s recover {recover}s")
+        when = "now" if start <= now + timedelta(seconds=5) else f"at {start:%Y-%m-%d %H:%M} UTC"
+        return jsonify(success=True, event=_event_dict(ev, now),
+                       msg=f"{kind.capitalize()} #{ev.id}: {symbol} {pct:+.1f}% starting {when}.")
+
+    @bp.route("/api/admin/market/events")
+    @admin_required
+    def admin_market_events():
+        from economy import MarketEvent
+        now = _now()
+        rows = MarketEvent.query.order_by(MarketEvent.id.desc()).limit(40).all()
+        return jsonify(success=True, events=[_event_dict(e, now) for e in rows])
+
+    @bp.route("/api/admin/market/event/<int:eid>/cancel", methods=["POST"])
+    @admin_required
+    def admin_market_cancel(eid):
+        from economy import MarketEvent, invalidate_events
+        e = db.session.get(MarketEvent, eid)
+        if not e:
+            return jsonify(success=False, msg="No such market event."), 404
+        if e.cancelled:
+            return jsonify(success=False, msg="Already cancelled."), 400
+        e.cancelled = True
+        db.session.commit()
+        invalidate_events()
+        _log_admin("market_cancel", eid, f"{e.symbol} {e.pct * 100:+.1f}%")
+        return jsonify(success=True, msg=f"Event #{eid} cancelled. Chart prices return to normal within a few seconds "
+                                         "(desk-stock drops that already happened are not reversed).")
+
+    # ---- live events (stimulus / levy / raffle) and trading halt ----
+    LIVE_MAX_PENDING = 30
+
+    def _live_dict(e, now):
+        status = "cancelled" if e.cancelled else "done" if e.applied else "scheduled"
+        return dict(id=e.id, kind=e.kind, amount=e.amount, pct=round((e.pct or 0) * 100, 1), winners=e.winners,
+                    status=status, start=e.start_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    starts_in_s=max(0, int((e.start_at - now).total_seconds())),
+                    note=e.note or "", result=e.result or "", by=e.created_by)
+
+    @bp.route("/api/admin/live/event", methods=["POST"])
+    @admin_required
+    def admin_live_event():
+        d = request.get_json(silent=True) or {}
+        kind = str(d.get("kind") or "").lower()
+        if kind not in LIVE_KINDS:
+            return jsonify(success=False, msg="Kind must be one of: " + ", ".join(LIVE_KINDS)), 400
+        amount = pct = 0.0
+        winners = 0
+        try:
+            if kind in ("stimulus", "raffle"):
+                amount = round(float(d.get("amount")), 2)
+                if not (amount == amount) or not 0 < amount <= LIVE_MAX_PER_PLAYER:
+                    return jsonify(success=False, msg=f"Amount must be 1 to {LIVE_MAX_PER_PLAYER:,.0f} ASD per player."), 400
+            if kind == "raffle":
+                winners = int(d.get("winners") or 1)
+                if not 1 <= winners <= LIVE_MAX_WINNERS:
+                    return jsonify(success=False, msg=f"Winners must be 1 to {LIVE_MAX_WINNERS}."), 400
+            if kind == "levy":
+                pct = float(d.get("pct")) / 100.0
+                if not (pct == pct) or not 0.01 <= pct <= LIVE_MAX_LEVY:
+                    return jsonify(success=False, msg="Levy must be 1 to 50 percent."), 400
+            delay = int(float(d.get("delay_s") or 0))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Numbers only for amount, percent, winners and delay."), 400
+        now = _now()
+        if not 0 <= delay <= 30 * 86400:
+            return jsonify(success=False, msg="Schedule at most 30 days ahead."), 400
+        start = now + timedelta(seconds=delay)
+        raw = str(d.get("start_at") or "").strip()
+        if raw:
+            try:
+                start = datetime.fromisoformat(raw.replace("Z", "+00:00").replace(" ", "T"))
+                if start.tzinfo is not None:
+                    from datetime import timezone
+                    start = start.astimezone(timezone.utc).replace(tzinfo=None)
+            except ValueError:
+                return jsonify(success=False, msg="Bad date. Use UTC like 2026-10-01T18:00."), 400
+            if start < now - timedelta(seconds=60) or start > now + timedelta(days=30):
+                return jsonify(success=False, msg="Pick a time within the next 30 days."), 400
+        start = max(start, now)
+        if AdminEvent.query.filter(AdminEvent.applied.is_(False), AdminEvent.cancelled.is_(False)).count() >= LIVE_MAX_PENDING:
+            return jsonify(success=False, msg="Too many scheduled events. Cancel some (/r events)."), 400
+        me = current_user()
+        ev = AdminEvent(kind=kind, amount=amount, pct=pct, winners=winners, start_at=start,
+                        note=_clean(d.get("note"), 160), created_by=me.username)
+        db.session.add(ev)
+        db.session.commit()
+        _log_admin("live_" + kind, ev.id, f"amount {amount} pct {pct} winners {winners} start {start:%Y-%m-%d %H:%M} UTC")
+        when = "now (within a few seconds)" if start <= now + timedelta(seconds=5) else f"at {start:%Y-%m-%d %H:%M} UTC"
+        return jsonify(success=True, event=_live_dict(ev, now), msg=f"{kind.capitalize()} #{ev.id} set for {when}.")
+
+    @bp.route("/api/admin/live/events")
+    @admin_required
+    def admin_live_events():
+        now = _now()
+        rows = AdminEvent.query.order_by(AdminEvent.id.desc()).limit(30).all()
+        left, why = halt_status()
+        return jsonify(success=True, events=[_live_dict(e, now) for e in rows],
+                       halt=dict(active=left > 0, seconds_left=left, reason=why))
+
+    @bp.route("/api/admin/live/event/<int:eid>/cancel", methods=["POST"])
+    @admin_required
+    def admin_live_cancel(eid):
+        e = db.session.get(AdminEvent, eid)
+        if not e:
+            return jsonify(success=False, msg="No such live event."), 404
+        if e.applied:
+            return jsonify(success=False, msg="Already happened - it can't be cancelled."), 400
+        if e.cancelled:
+            return jsonify(success=False, msg="Already cancelled."), 400
+        e.cancelled = True
+        db.session.commit()
+        _log_admin("live_cancel", eid, e.kind)
+        return jsonify(success=True, msg=f"Live event #{eid} cancelled.")
+
+    @bp.route("/api/admin/live/halt", methods=["POST"])
+    @admin_required
+    def admin_live_halt():
+        d = request.get_json(silent=True) or {}
+        try:
+            minutes = float(d.get("minutes", 0))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Minutes must be a number."), 400
+        f = db.session.get(AdminFlag, "halt") or AdminFlag(name="halt")
+        me = current_user()
+        if minutes <= 0:
+            f.until, f.reason, f.set_by = None, "", me.username
+            db.session.add(f)
+            db.session.commit()
+            _log_admin("halt_end", "trading")
+            _system_announce("Trading has resumed.", "info", 1)
+            return jsonify(success=True, msg="Trading resumed.")
+        if minutes > 24 * 60:
+            return jsonify(success=False, msg="A halt can last at most 24 hours."), 400
+        reason = _clean(d.get("reason"), 160)
+        f.until, f.reason, f.set_by = _now() + timedelta(minutes=minutes), reason, me.username
+        db.session.add(f)
+        db.session.commit()
+        _log_admin("halt_start", "trading", f"{minutes:g} min {reason}")
+        _system_announce(f"TRADING HALT for {minutes:g} minutes" + (f": {reason}" if reason else "."), "urgent", max(1, minutes / 60))
+        return jsonify(success=True, msg=f"Trading halted for {minutes:g} minutes. End it early with /r resume.")
+
+    @bp.route("/api/announcements")
+    @login_required
+    def announcements_unseen():
+        user = current_user()
+        seen = user.desktop_state().get("announce_seen", 0)
+        seen = seen if isinstance(seen, int) else 0
+        rows = (active_announcements_query().filter(Announcement.id > seen)
+                .order_by(Announcement.id.asc()).limit(10).all())
+        return jsonify(success=True, announcements=[_ann_dict(a) for a in rows],
+                       latest_id=latest_announcement_id())
+
+    @bp.route("/api/announcements/ack", methods=["POST"])
+    @login_required
+    def announcements_ack():
+        d = request.get_json(silent=True) or {}
+        try:
+            aid = int(d.get("id"))
+        except (TypeError, ValueError):
+            return jsonify(success=False, msg="Invalid id."), 400
+        user = current_user()
+        state = user.desktop_state()
+        prev = state.get("announce_seen", 0)
+        state["announce_seen"] = max(prev if isinstance(prev, int) else 0, min(aid, latest_announcement_id() or aid))
+        user.set_desktop_state(state)
+        db.session.commit()
+        return jsonify(success=True)
 
     app.register_blueprint(bp)
     return bp

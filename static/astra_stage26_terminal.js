@@ -1,20 +1,3 @@
-/* ===========================================================================
- * astra_stage26_terminal.js - Stage 26.
- *
- * TERMINAL: a command-line app. Commands start with /r :
- *
- *   /r download   download eligible apps from the App Store
- *   /r extract    unpack their downloaded installer archives
- *   /r openEX     install and open the extracted apps
- *
- * plus /r help, ls, cat, status, rm, clear, news, say, balance, whoami, date,
- * open, apps, echo, history, about.
- *
- * READER: a small text viewer. Files opened from FILES or the terminal land here.
- *
- * Download and extraction phases use the App Store pipeline and are saved in
- * AstraDesktopState.downloads, shared with FILES > DOWNLOADS.
- * =========================================================================== */
 (function () {
   'use strict';
 
@@ -24,11 +7,10 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
-  function sfx(n) { try { if (window.SFX) window.SFX.play(n); } catch (e) { /* ignore */ } }
+  function sfx(n) { try { if (window.SFX) window.SFX.play(n); } catch (e) { } }
 
   var ZIP_ID = 'dl-blognet', DIR_ID = 'dl-blognet-x';
 
-  /* ---------------------------------------------------------------- files */
   function slug(s) {
     return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 42);
   }
@@ -37,7 +19,6 @@
   }
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
-  // The full content of blognet_files/, regenerated on demand.
   function buildFiles() {
     var ps = posts();
     var files = ps.map(function (p, i) {
@@ -73,7 +54,7 @@
     var savedTtsPrefs = JSON.parse(localStorage.getItem(TTS_PREF_KEY) || '{}');
     if (savedTtsPrefs.language === 'en' || savedTtsPrefs.language === 'fr') ttsPrefs.language = savedTtsPrefs.language;
     if (savedTtsPrefs.gender === 'auto' || savedTtsPrefs.gender === 'male' || savedTtsPrefs.gender === 'female') ttsPrefs.gender = savedTtsPrefs.gender;
-  } catch (e) { /* storage may be disabled */ }
+  } catch (e) { }
 
   function voiceGender(voice) {
     var explicit = String(voice.gender || '').toLowerCase();
@@ -96,7 +77,7 @@
       patch = patch || {};
       if (patch.language === 'en' || patch.language === 'fr') ttsPrefs.language = patch.language;
       if (patch.gender === 'auto' || patch.gender === 'male' || patch.gender === 'female') ttsPrefs.gender = patch.gender;
-      try { localStorage.setItem(TTS_PREF_KEY, JSON.stringify(ttsPrefs)); } catch (e) { /* storage may be disabled */ }
+      try { localStorage.setItem(TTS_PREF_KEY, JSON.stringify(ttsPrefs)); } catch (e) { }
       refreshTtsControls();
     },
     speak: function (text) {
@@ -119,7 +100,6 @@
   };
   refreshTtsControls();
 
-  /* ---------------------------------------------------------------- state */
   function ds() { return window.AstraDesktopState; }
   function saved() { return (ds() && ds().get().downloads) || []; }
   function has(id) { return saved().some(function (e) { return e.id === id; }); }
@@ -136,7 +116,6 @@
   var hasZip = function () { return has(ZIP_ID); };
   var hasDir = function () { return has(DIR_ID); };
 
-  /* ------------------------------------------------- FILES app registration */
   function whenFiles(fn, tries) {
     if (window.AstraFiles) { fn(); return; }
     if ((tries === undefined ? 40 : tries) <= 0) return;
@@ -172,7 +151,6 @@
     if (hasDir()) showDir();
   }
 
-  /* -------------------------------------------------------------- READER */
   var Reader = {
     current: null, all: false,
     open: function (name) {
@@ -241,7 +219,6 @@
     }
   };
 
-  /* ------------------------------------------------------------ terminal */
   var outEl = null, inEl = null, busy = false, hist = [], hIdx = 0;
   var terminalAdmin = false;
 
@@ -273,7 +250,6 @@
     return n || 'operator';
   }
 
-  // Animated progress on a single line; resolves when done.
   function progress(label, totalMs, total, onTick) {
     return new Promise(function (resolve) {
       var line = print(label + ' ' + bar(0, 24), 's26-dim');
@@ -314,7 +290,8 @@
   }
 
   var COMMANDS = {
-    help: function () {
+    help: function (args) {
+      if ((args && args[0] || '').toLowerCase() === 'admin') { adminHelp(); return; }
       [
         'Commands (type them with a leading /r):',
         '  /r download [app|all]  download eligible App Store apps (default: all)',
@@ -328,7 +305,8 @@
         '  /r open <app>  open an app (e.g. /r open bank)',
         '  /r apps        list openable apps',
         '  /r balance     your ASD balance',
-        '  /r whoami | date | echo <text> | history | clear | about'
+        '  /r whoami | date | echo <text> | history | clear | about',
+        '  /r help admin  moderation, announcements, economy and world commands'
       ].forEach(function (l) { print(l); });
     },
 
@@ -448,6 +426,443 @@
     }
   };
 
+  // ---------------------------------------------------------------- admin commands
+  function adm(method, path, body) {
+    return fetch(path, {
+      method: method, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) {
+      return r.json().catch(function () { return { success: false, msg: 'Bad response from the server.' }; });
+    }).then(function (r) { if (r && !r.msg && r.error) r.msg = r.error; return r; },
+      function () { return { success: false, msg: 'Could not reach the server.' }; });
+  }
+  function say(r, okMsg) {
+    print(r.msg || (r.success ? (okMsg || 'done.') : 'failed.'), r.success ? 's26-ok' : 's26-err');
+    return !!r.success;
+  }
+  function need(args, n, usage) {
+    if ((args || []).length >= n) return true;
+    print('usage: ' + usage, 's26-err');
+    return false;
+  }
+  function parseHours(v) {
+    var m = String(v || '').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)(m|h|d)?$/);
+    if (!m) return NaN;
+    var n = parseFloat(m[1]);
+    return m[2] === 'm' ? n / 60 : m[2] === 'd' ? n * 24 : n;
+  }
+  function findOperator(name) {
+    return adm('GET', '/api/admin/users?q=' + encodeURIComponent(name)).then(function (r) {
+      if (!r.success) throw new Error(r.msg || 'user lookup failed');
+      var low = name.toLowerCase();
+      var u = r.users.filter(function (x) { return x.username.toLowerCase() === low; })[0];
+      if (!u) throw new Error('no operator named ' + name);
+      return u;
+    });
+  }
+  function money(n) { return (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+  function fmtLeft(sec) { return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's'; }
+  function safe(fn) {
+    return function (args) {
+      try {
+        return Promise.resolve(fn(args || [])).catch(function (e) { print(e.message || 'error', 's26-err'); });
+      } catch (e) { print(e.message || 'error', 's26-err'); return Promise.resolve(); }
+    };
+  }
+
+  function adminHelp() {
+    [
+      'ADMIN COMMANDS (all actions are logged; see /r audit)',
+      ' Announcements',
+      '  /r announce [-w|-u] [-t 30m|6h|2d] <message>   tell every player (default: info, 24h)',
+      '       -w = warning   -u = urgent   (alias: /r broadcast)',
+      '  /r announcements   recent announcements and their ids',
+      '  /r retract <id>    pull an announcement back',
+      ' Players',
+      '  /r users [search]              list operators',
+      '  /r whois <user>                full profile, job, balance, record',
+      '  /r ban <user> <reason>         suspend an account',
+      '  /r unban <user>                restore an account',
+      '  /r jail <user> <minutes> [reason]   custody order (max 1440)',
+      '  /r release <user>              end custody',
+      '  /r admins                      list administrators',
+      ' Moderation',
+      '  /r reports [open|reviewing|resolved|dismissed]',
+      '  /r resolve <id> [resolved|dismissed|reviewing] [note]',
+      '  /r queue                       BLABBER posts needing review',
+      '  /r hide <post id> | /r unhide <post id> | /r reveal <post id>',
+      '  /r leads                       cheat-check outliers (leads, not verdicts)',
+      ' Economy / world',
+      '  /r give <user> <amount> <reason>    add ASD',
+      '  /r take <user> <amount> <reason>    remove ASD (never below 0)',
+      '  /r regime [name]               show or set the world regime',
+      ' Live events (all accept -in 2h or -at 2026-10-01T18:00 to schedule, -m <message> last)',
+      '  /r stimulus <amount> [opts]    pay every active player',
+      '  /r levy <percent> [opts]       collect 1-50% of every active balance',
+      '  /r raffle <prize> <winners> [opts]   random active players win a prize',
+      '  /r halt <10m|2h> [reason]      freeze all trading;  /r resume ends it',
+      '  /r live | /r cancelevent <id>  list / cancel live events',
+      ' Market',
+      '  /r crash|boom <SYMBOL|all> <pct> [opts] | /r market | /r cancel <id> | /r symbols',
+      '  /r stats                       server overview',
+      '  /r audit [count]               recent admin actions'
+    ].forEach(function (l) { print(l); });
+  }
+
+  var ADMIN_COMMANDS = {
+    announce: safe(function (args) {
+      var level = 'info', hours = 24, words = [];
+      for (var i = 0; i < args.length; i++) {
+        var a = args[i];
+        if (a === '-w' || a === '--warn') level = 'warn';
+        else if (a === '-u' || a === '--urgent') level = 'urgent';
+        else if (a === '-t' || a === '--hours') {
+          if (i + 1 >= args.length) throw new Error('-t needs a duration, e.g. -t 30m, -t 6h, -t 2d');
+          hours = parseHours(args[++i]);
+          if (!isFinite(hours) || hours <= 0) throw new Error('bad duration. Use 30m, 6h or 2d (15 minutes to 30 days).');
+        } else words.push(a);
+      }
+      var body = words.join(' ');
+      if (!body) throw new Error('usage: /r announce [-w|-u] [-t 30m|6h|2d] <message>');
+      return adm('POST', '/api/admin/announce', { body: body, level: level, hours: hours }).then(function (r) {
+        if (say(r) && r.announcement) print('id ' + r.announcement.id + ' \u00b7 ' + level + ' \u00b7 expires ' + (r.announcement.expires || 'never') + ' UTC', 's26-dim');
+      });
+    }),
+
+    announcements: safe(function () {
+      return adm('GET', '/api/admin/announcements').then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.announcements.length) { print('no announcements yet.', 's26-dim'); return; }
+        r.announcements.slice(0, 15).forEach(function (a) {
+          var st = a.retracted ? 'retracted' : a.active ? 'ACTIVE' : 'expired';
+          print('#' + a.id + ' [' + a.level + '] ' + st + ' \u00b7 ' + a.author + ' \u00b7 ' + a.at + '\n    ' + a.body,
+            a.active ? 's26-ok' : 's26-dim');
+        });
+      });
+    }),
+
+    retract: safe(function (args) {
+      if (!need(args, 1, '/r retract <announcement id>')) return;
+      var id = parseInt(String(args[0]).replace('#', ''), 10);
+      if (!(id > 0)) throw new Error('announcement id must be a number (see /r announcements)');
+      return adm('POST', '/api/admin/announce/' + id + '/retract').then(function (r) { say(r); });
+    }),
+
+    users: safe(function (args) {
+      return adm('GET', '/api/admin/users?q=' + encodeURIComponent(args.join(' '))).then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.users.length) { print('no matching operators.', 's26-dim'); return; }
+        r.users.slice(0, 40).forEach(function (u) {
+          print(u.username + (u.is_admin ? '  [ADMIN]' : '') + (u.is_banned ? '  [BANNED: ' + (u.ban_reason || '?') + ']' : '') +
+            '  ' + (u.job_status || 'no career') + '  ' + (u.balance != null ? money(u.balance) + ' ASD' : '') +
+            (u.open_reports ? '  reports:' + u.open_reports : ''),
+            u.is_banned ? 's26-warn' : undefined);
+        });
+        if (r.users.length > 40) print('... ' + (r.users.length - 40) + ' more. Narrow with /r users <search>.', 's26-dim');
+      });
+    }),
+
+    whois: safe(function (args) {
+      if (!need(args, 1, '/r whois <user>')) return;
+      return adm('GET', '/api/admin/whois/' + encodeURIComponent(args.join(' '))).then(function (r) {
+        if (!r.success) { say(r); return; }
+        print(r.username + (r.is_admin ? '  [ADMIN]' : '') + (r.is_banned ? '  [BANNED]' : ''), 's26-ok');
+        print('  joined ' + (r.created || '?') + ' \u00b7 account #' + r.id);
+        if (r.is_banned) print('  banned by ' + (r.banned_by || '?') + ': ' + (r.ban_reason || 'no reason'), 's26-warn');
+        if (r.has_save) {
+          print('  ' + (r.job_title || '-') + ' (' + (r.job_status || '-') + ')' + (r.company ? ' at ' + r.company : '') + ' \u00b7 salary ' + money(r.salary));
+          print('  balance ' + money(r.balance) + ' ASD \u00b7 ' + (r.active ? 'active career' : 'career not active'));
+        } else print('  no career started');
+        print('  convictions ' + r.convictions + ' \u00b7 wanted ' + r.wanted + (r.jail_seconds_left ? ' \u00b7 IN CUSTODY ' + fmtLeft(r.jail_seconds_left) : ''));
+        print('  reports: ' + r.open_reports + ' open / ' + r.total_reports + ' total');
+      });
+    }),
+
+    ban: safe(function (args) {
+      if (!need(args, 2, '/r ban <user> <reason>')) return;
+      var name = args[0], reason = args.slice(1).join(' ');
+      return findOperator(name).then(function (u) {
+        return adm('POST', '/api/admin/users/' + u.id + '/ban', { reason: reason });
+      }).then(function (r) { say(r); });
+    }),
+
+    unban: safe(function (args) {
+      if (!need(args, 1, '/r unban <user>')) return;
+      return findOperator(args[0]).then(function (u) {
+        return adm('POST', '/api/admin/users/' + u.id + '/unban', {});
+      }).then(function (r) { say(r); });
+    }),
+
+    jail: safe(function (args) {
+      if (!need(args, 2, '/r jail <user> <minutes> [reason]')) return;
+      var mins = parseInt(args[1], 10);
+      if (!(mins >= 0)) throw new Error('minutes must be a number (0 releases).');
+      return adm('POST', '/api/admin/world/jail', { username: args[0], minutes: mins, reason: args.slice(2).join(' ') })
+        .then(function (r) { say(r); });
+    }),
+
+    release: safe(function (args) {
+      if (!need(args, 1, '/r release <user>')) return;
+      return adm('POST', '/api/admin/world/jail', { username: args[0], minutes: 0, reason: 'Released by admin' })
+        .then(function (r) { say(r); });
+    }),
+
+    admins: safe(function () {
+      return adm('GET', '/api/admin/users?admins_only=1').then(function (r) {
+        if (!r.success) { say(r); return; }
+        print(r.users.map(function (u) { return u.username; }).join('  ') || '(none)');
+      });
+    }),
+
+    reports: safe(function (args) {
+      var st = (args[0] || 'open').toLowerCase();
+      return adm('GET', '/api/admin/reports?status=' + encodeURIComponent(st)).then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.reports.length) { print('no ' + st + ' reports.', 's26-dim'); return; }
+        r.reports.slice(0, 25).forEach(function (x) {
+          print('#' + x.id + ' \u2192 ' + (x.target_username || '?') + ' \u00b7 ' + (x.reason || '') + ' \u00b7 by ' + (x.reporter || '?') +
+            (x.details ? '\n    ' + x.details : ''));
+        });
+      });
+    }),
+
+    resolve: safe(function (args) {
+      if (!need(args, 1, '/r resolve <report id> [resolved|dismissed|reviewing] [note]')) return;
+      var id = parseInt(String(args[0]).replace('#', ''), 10);
+      if (!(id > 0)) throw new Error('report id must be a number (see /r reports)');
+      var rest = args.slice(1), status = 'resolved';
+      if (rest.length && /^(resolved|dismissed|reviewing)$/i.test(rest[0])) status = rest.shift().toLowerCase();
+      return adm('POST', '/api/admin/reports/' + id + '/resolve', { status: status, note: rest.join(' ') })
+        .then(function (r) { print(r.success ? 'report #' + id + ' marked ' + status + '.' : (r.msg || 'failed.'), r.success ? 's26-ok' : 's26-err'); });
+    }),
+
+    queue: safe(function () {
+      return adm('GET', '/api/admin/blabber/queue').then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.posts.length) { print('moderation queue is empty.', 's26-dim'); return; }
+        r.posts.slice(0, 25).forEach(function (p) {
+          print('#' + p.id + (p.hidden ? ' [hidden]' : '') + (p.flagged ? ' [flagged]' : '') + ' reports:' + p.reports + '\n    ' + p.body);
+        });
+      });
+    }),
+
+    hide: safe(function (args) {
+      if (!need(args, 1, '/r hide <post id>')) return;
+      return adm('POST', '/api/admin/blabber/' + parseInt(args[0], 10) + '/remove').then(function (r) { say(r, 'post hidden.'); });
+    }),
+    unhide: safe(function (args) {
+      if (!need(args, 1, '/r unhide <post id>')) return;
+      return adm('POST', '/api/admin/blabber/' + parseInt(args[0], 10) + '/restore').then(function (r) { say(r, 'post restored.'); });
+    }),
+    reveal: safe(function (args) {
+      if (!need(args, 1, '/r reveal <post id>')) return;
+      return adm('GET', '/api/admin/blabber/' + parseInt(args[0], 10) + '/reveal').then(function (r) {
+        if (r.success) print('author: ' + r.author + '   (this lookup was logged)', 's26-warn'); else say(r);
+      });
+    }),
+
+    leads: safe(function () {
+      return adm('GET', '/api/admin/cheatcheck').then(function (r) {
+        if (!r.success) { say(r); return; }
+        print('average balance ' + money(r.avg_balance) + ' ASD. Top suspicion scores (leads, not verdicts):', 's26-dim');
+        r.players.slice(0, 15).forEach(function (p) {
+          print(p.username + '  score ' + p.suspicion + '  bal ' + money(p.balance) + ' (' + p.x_avg + 'x avg)  crimes24h ' + p.crimes_24h +
+            '  sent24h ' + money(p.sent_24h) + '  reports ' + p.open_reports, p.suspicion >= 3 ? 's26-warn' : undefined);
+        });
+      });
+    }),
+
+    give: safe(function (args) {
+      if (!need(args, 3, '/r give <user> <amount> <reason>')) return;
+      var amt = parseFloat(args[1]);
+      if (!(amt > 0)) throw new Error('amount must be a positive number (use /r take to remove).');
+      return adm('POST', '/api/admin/economy/adjust', { username: args[0], amount: amt, reason: args.slice(2).join(' ') })
+        .then(function (r) { say(r); });
+    }),
+    take: safe(function (args) {
+      if (!need(args, 3, '/r take <user> <amount> <reason>')) return;
+      var amt = parseFloat(args[1]);
+      if (!(amt > 0)) throw new Error('amount must be a positive number.');
+      return adm('POST', '/api/admin/economy/adjust', { username: args[0], amount: -amt, reason: args.slice(2).join(' ') })
+        .then(function (r) { say(r); });
+    }),
+
+    regime: safe(function (args) {
+      if (!args.length) {
+        return adm('GET', '/api/world/state').then(function (r) {
+          if (!r.success) { say(r); return; }
+          print('current regime: ' + r.regime + ' (' + r.rules.label + ') \u00b7 changed ' + r.changed_ago_min + ' min ago');
+          print('options: ' + Object.keys(r.regimes).join(', ') + '   set with /r regime <name>', 's26-dim');
+        });
+      }
+      return adm('POST', '/api/admin/world/regime', { regime: args[0].toLowerCase() }).then(function (r) { say(r); });
+    }),
+
+    stats: safe(function () {
+      return adm('GET', '/api/admin/stats').then(function (r) {
+        if (!r.success) { say(r); return; }
+        print('accounts ' + r.accounts + ' \u00b7 active players ' + r.active_players + ' \u00b7 admins ' + r.admins + ' \u00b7 banned ' + r.banned);
+        print('open reports ' + r.open_reports + ' \u00b7 in custody ' + r.jailed + ' \u00b7 live announcements ' + r.active_announcements);
+        print('regime ' + r.regime_label + ' \u00b7 average balance ' + money(r.avg_balance) + ' ASD');
+      });
+    }),
+
+    audit: safe(function (args) {
+      var n = Math.max(1, Math.min(parseInt(args[0], 10) || 15, 100));
+      return adm('GET', '/api/admin/actions').then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.actions.length) { print('audit log is empty.', 's26-dim'); return; }
+        r.actions.slice(0, n).forEach(function (a) { print(a.at + ' \u00b7 ' + a.admin + ' \u00b7 ' + a.action + ' \u00b7 ' + a.target + (a.detail ? ' \u00b7 ' + a.detail : '')); });
+      });
+    })
+  };
+  ADMIN_COMMANDS.broadcast = ADMIN_COMMANDS.announce;
+  ADMIN_COMMANDS.anns = ADMIN_COMMANDS.announcements;
+  Object.keys(ADMIN_COMMANDS).forEach(function (k) { COMMANDS[k] = ADMIN_COMMANDS[k]; });
+
+  function parseSecs(v, flag) {
+    var m = String(v || '').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)(s|m|h|d)?$/);
+    if (!m) throw new Error(flag + ' needs a duration like 30s, 10m, 2h or 1d (plain numbers = minutes).');
+    var n = parseFloat(m[1]), u = m[2] || 'm';
+    return Math.round(n * (u === 's' ? 1 : u === 'm' ? 60 : u === 'h' ? 3600 : 86400));
+  }
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec));
+    if (sec >= 86400) return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
+    if (sec >= 3600) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
+    if (sec >= 60) return Math.round(sec / 60) + 'm';
+    return sec + 's';
+  }
+  function marketShock(sign, args, word) {
+    var usage = '/r ' + word + ' <SYMBOL|all> <percent> [-in 2h | -at 2026-10-01T18:00] [-ramp 30s] [-hold 10m] [-recover 30m] [-m headline]';
+    if (args.length < 2) throw new Error('usage: ' + usage);
+    var pct = parseFloat(String(args[1]).replace('%', ''));
+    if (!isFinite(pct) || pct === 0) throw new Error('percent must be a number, e.g. 40 (the sign is added for you).');
+    var body = { symbol: args[0].toUpperCase(), pct: sign * Math.abs(pct) };
+    for (var i = 2; i < args.length; i++) {
+      var f = args[i].toLowerCase();
+      if (f === '-m') { body.note = args.slice(i + 1).join(' '); break; }
+      if (f === '-in' || f === '-ramp' || f === '-hold' || f === '-recover' || f === '-at') {
+        if (i + 1 >= args.length) throw new Error(f + ' needs a value.');
+        var v = args[++i];
+        if (f === '-at') body.start_at = v;
+        else body[{ '-in': 'delay_s', '-ramp': 'ramp_s', '-hold': 'hold_s', '-recover': 'recover_s' }[f]] = parseSecs(v, f);
+      } else throw new Error('unknown option ' + args[i] + '.  usage: ' + usage);
+    }
+    return adm('POST', '/api/admin/market/event', body).then(function (r) {
+      if (say(r) && r.event) {
+        var e = r.event;
+        print('falls over ' + fmtDur(e.ramp_s) + ', holds ' + fmtDur(e.hold_s) + ', recovers over ' + fmtDur(e.recover_s) +
+          ' \u00b7 cancel with /r cancel ' + e.id, 's26-dim');
+      }
+    });
+  }
+
+  var MARKET_COMMANDS = {
+    crash: safe(function (args) { return marketShock(-1, args, 'crash'); }),
+    boom: safe(function (args) { return marketShock(1, args, 'boom'); }),
+    market: safe(function () {
+      return adm('GET', '/api/admin/market/events').then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.events.length) { print('no market events yet. Try /r crash all 30 -in 1h', 's26-dim'); return; }
+        r.events.slice(0, 20).forEach(function (e) {
+          var when = e.status === 'scheduled' ? 'in ' + fmtDur(e.starts_in_s) : e.start + ' UTC';
+          print('#' + e.id + ' ' + e.symbol + ' ' + (e.pct > 0 ? '+' : '') + e.pct + '%  [' + e.status + ']  ' + when +
+            '  (' + fmtDur(e.ramp_s) + ' / ' + fmtDur(e.hold_s) + ' / ' + fmtDur(e.recover_s) + ')' + (e.note ? '  "' + e.note + '"' : ''),
+            e.status === 'active' ? 's26-warn' : e.status === 'scheduled' ? 's26-ok' : 's26-dim');
+        });
+      });
+    }),
+    cancel: safe(function (args) {
+      if (!need(args, 1, '/r cancel <market event id>')) return;
+      var id = parseInt(String(args[0]).replace('#', ''), 10);
+      if (!(id > 0)) throw new Error('event id must be a number (see /r market).');
+      return adm('POST', '/api/admin/market/event/' + id + '/cancel').then(function (r) { say(r); });
+    }),
+    symbols: safe(function () {
+      return adm('GET', '/api/admin/market/symbols').then(function (r) {
+        if (!r.success) { say(r); return; }
+        print('exchange stocks (full ramp/hold/recover curve): ' + r.economy.join(' '));
+        print('desk stocks (one-off drop at start):            ' + r.desk.join(' '));
+        print('ALL hits every ticker.', 's26-dim');
+      });
+    })
+  };
+  MARKET_COMMANDS.events = MARKET_COMMANDS.market;
+  Object.keys(MARKET_COMMANDS).forEach(function (k) { COMMANDS[k] = MARKET_COMMANDS[k]; });
+
+
+  // ---------------------------------------------------------------- live events
+  function liveOpts(args, from, body, usage) {
+    for (var i = from; i < args.length; i++) {
+      var f = args[i].toLowerCase();
+      if (f === '-m') { body.note = args.slice(i + 1).join(' '); break; }
+      if (f === '-in' || f === '-at') {
+        if (i + 1 >= args.length) throw new Error(f + ' needs a value.');
+        var v = args[++i];
+        if (f === '-at') body.start_at = v; else body.delay_s = parseSecs(v, f);
+      } else throw new Error('unknown option ' + args[i] + '.  usage: ' + usage);
+    }
+    return body;
+  }
+  function liveSend(body) {
+    return adm('POST', '/api/admin/live/event', body).then(function (r) {
+      if (say(r) && r.event) print('cancel with /r cancelevent ' + r.event.id + ' \u00b7 list with /r live', 's26-dim');
+    });
+  }
+  var LIVE_COMMANDS = {
+    stimulus: safe(function (args) {
+      var usage = '/r stimulus <amount each> [-in 2h | -at 2026-10-01T18:00] [-m message]';
+      if (args.length < 1) throw new Error('usage: ' + usage);
+      var amt = parseFloat(String(args[0]).replace(/,/g, ''));
+      if (!(amt > 0)) throw new Error('amount must be a positive number.');
+      return liveSend(liveOpts(args, 1, { kind: 'stimulus', amount: amt }, usage));
+    }),
+    levy: safe(function (args) {
+      var usage = '/r levy <percent of balance> [-in 2h | -at ...] [-m message]';
+      if (args.length < 1) throw new Error('usage: ' + usage);
+      var pct = parseFloat(String(args[0]).replace('%', ''));
+      if (!(pct > 0)) throw new Error('percent must be a positive number (1-50).');
+      return liveSend(liveOpts(args, 1, { kind: 'levy', pct: pct }, usage));
+    }),
+    raffle: safe(function (args) {
+      var usage = '/r raffle <prize each> <winners> [-in 2h | -at ...] [-m message]';
+      if (args.length < 2) throw new Error('usage: ' + usage);
+      var amt = parseFloat(String(args[0]).replace(/,/g, '')), w = parseInt(args[1], 10);
+      if (!(amt > 0) || !(w > 0)) throw new Error('prize and winners must be positive numbers.');
+      return liveSend(liveOpts(args, 2, { kind: 'raffle', amount: amt, winners: w }, usage));
+    }),
+    halt: safe(function (args) {
+      if (!need(args, 1, '/r halt <30s|10m|2h> [reason]   (trading halt, max 24h)')) return;
+      var secs = parseSecs(args[0], 'duration');
+      return adm('POST', '/api/admin/live/halt', { minutes: secs / 60, reason: args.slice(1).join(' ') }).then(function (r) { say(r); });
+    }),
+    resume: safe(function () {
+      return adm('POST', '/api/admin/live/halt', { minutes: 0 }).then(function (r) { say(r); });
+    }),
+    live: safe(function () {
+      return adm('GET', '/api/admin/live/events').then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (r.halt && r.halt.active) print('TRADING HALT active: ' + fmtLeft(r.halt.seconds_left) + ' left' + (r.halt.reason ? ' - ' + r.halt.reason : ''), 's26-warn');
+        if (!r.events.length) { print('no live events yet. Try /r stimulus 500 -in 1h', 's26-dim'); return; }
+        r.events.slice(0, 20).forEach(function (e) {
+          var what = e.kind === 'levy' ? e.pct + '%' : money(e.amount) + ' ASD' + (e.kind === 'raffle' ? ' x' + e.winners : '');
+          var when = e.status === 'scheduled' ? 'in ' + fmtDur(e.starts_in_s) : e.start + ' UTC';
+          print('#' + e.id + ' ' + e.kind + ' ' + what + '  [' + e.status + ']  ' + when + (e.result ? '  -> ' + e.result : ''),
+            e.status === 'scheduled' ? 's26-ok' : 's26-dim');
+        });
+      });
+    }),
+    cancelevent: safe(function (args) {
+      if (!need(args, 1, '/r cancelevent <live event id>')) return;
+      var id = parseInt(String(args[0]).replace('#', ''), 10);
+      if (!(id > 0)) throw new Error('event id must be a number (see /r live).');
+      return adm('POST', '/api/admin/live/event/' + id + '/cancel').then(function (r) { say(r); });
+    })
+  };
+  Object.keys(LIVE_COMMANDS).forEach(function (k) { COMMANDS[k] = LIVE_COMMANDS[k]; });
+
   function runCommand(line) {
     if (!terminalAdmin) {
       print('Access denied: administrator access is required.', 's26-err');
@@ -463,7 +878,7 @@
     }
     var parts = rest.trim().split(/\s+/).filter(Boolean);
     var name = (parts.shift() || 'help').toLowerCase();
-    var fn = COMMANDS[name];
+    var fn = Object.prototype.hasOwnProperty.call(COMMANDS, name) ? COMMANDS[name] : null;
     if (!fn) { print('unknown command: ' + name + '   (try /r help)', 's26-err'); return Promise.resolve(); }
     try { return Promise.resolve(fn(parts)); }
     catch (e) { print('error: ' + e.message, 's26-err'); return Promise.resolve(); }
@@ -485,7 +900,6 @@
     });
   }
 
-  /* --------------------------------------------------------------- build */
   function css() {
     if ($('astra26Styles')) return;
     var s = document.createElement('style'); s.id = 'astra26Styles';

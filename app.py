@@ -1,5 +1,5 @@
 import integrity
-integrity.enforce()   # refuse to run unless this is the signed release (see integrity.py)
+integrity.enforce()
 
 import base64
 import json
@@ -52,36 +52,17 @@ from astra_net import find_user, ensure_admin, sync_admins, init_net
 
 app = Flask(__name__)
 secret_key = os.environ.get("SECRET_KEY")
-_hosted = bool(os.environ.get("VERCEL") or os.environ.get("RENDER") or os.environ.get("ASTRA_HOSTED"))
-if _hosted and not secret_key:
-    raise RuntimeError("A hosted deployment requires a stable SECRET_KEY environment variable.")
+if os.environ.get("VERCEL") and not secret_key:
+    raise RuntimeError("Vercel requires a stable SECRET_KEY environment variable.")
 app.secret_key = secret_key or "dev-only-change-me"
-app.config["SESSION_COOKIE_SECURE"] = _hosted
-if os.environ.get("ASTRA_BEHIND_PROXY"):
-    # Running behind the Cloudflare Pages proxy (functions/[[path]].js): trust its
-    # X-Forwarded-Proto/Host so redirects and Google sign-in use the public address.
+app.config["SESSION_COOKIE_SECURE"] = bool(os.environ.get("VERCEL")) or os.environ.get("ASTRA_HTTPS") == "1"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+if os.environ.get("ASTRA_BEHIND_PROXY", "").strip() == "1":
     from werkzeug.middleware.proxy_fix import ProxyFix
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
 def _default_data_dir():
-    """Where the local save file lives when no DATABASE_URL is set.
-
-    Bug this fixes: the old code used the bare relative path "sqlite:///astra.db",
-    which SQLite resolves against the process's CURRENT WORKING DIRECTORY - not the
-    .exe's own folder. A double-clicked file usually gets CWD = its own folder, but a
-    taskbar pin, a desktop shortcut with no explicit "Start in", or Windows' "Open
-    with" can each hand the frozen exe a different CWD. Every one of those looks like
-    a fresh, empty game to the player, because each launch reads/writes a different
-    astra.db in a different folder - saves "don't work" because they're scattered
-    across several invisible files instead of missing.
-
-    Fix: always resolve to an explicit, stable path. When frozen (PyInstaller), that's
-    a folder next to the .exe so the install stays portable; if that folder isn't
-    writable (e.g. installed under Program Files), fall back to the OS's per-user data
-    directory, which is always writable. Development runs use the folder
-    containing app.py, independent of the launcher's working directory.
-    """
     if not getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(__file__))
     exe_dir = os.path.dirname(os.path.abspath(sys.executable))
@@ -125,10 +106,6 @@ app.config["SQLALCHEMY_DATABASE_URI"] = database_url or (
     "sqlite:///" + DB_PATH.replace("\\", "/")
 )
 if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
-    # WAL = readers don't block the writer and a mid-write crash doesn't corrupt the
-    # file; NORMAL sync is the standard durable-enough pairing with WAL and doesn't
-    # fsync on every single commit, which matters since almost every player action
-    # here does commit immediately (see log_event/mark_active call sites throughout).
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "connect_args": {"timeout": 15},
     }
@@ -165,7 +142,6 @@ market_state = {
     "btc_price": 93000.0,
     "btc_difficulty": None,
 
-    # --- Phase 8: politics & AI rival ---------------------------------
     "tax_rate": TAX_RATE_DEFAULT,
     "political_log": [],
     "ai_rival": {
@@ -205,11 +181,6 @@ def fetch_btc_price():
 
 
 def fetch_kraken_price(reference):
-    """The second leg of the arbitrage engine, now a real public feed rather
-    than `binance + random()`. Kraken's ticker returns {result: {PAIR: {c:
-    [last, lot]}}} under an unpredictable pair key, hence the next(iter(...)).
-    If the call fails we fall back to simulating a spread around the
-    reference price and flag the leg as simulated so the UI can say so."""
     try:
         resp = requests.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSDT", timeout=2)
         payload = resp.json()
@@ -224,10 +195,6 @@ def fetch_kraken_price(reference):
 
 
 def fetch_btc_difficulty():
-    """blockchain.info's /q/getdifficulty returns the current Bitcoin
-    network difficulty as plain text - no key, no JSON. Feeds mining_calc's
-    real formulas so the mining profitability calculator uses the real
-    network, not a guess."""
     try:
         resp = requests.get("https://blockchain.info/q/getdifficulty", timeout=3)
         value = float(resp.text.strip())
@@ -240,11 +207,6 @@ def fetch_btc_difficulty():
 
 
 def _maybe_political_event():
-    """Rolled once per market_tick - global, so it hits every player
-    identically. tariff/subsidy/trade_deal move a whole sector; corruption/
-    bailout move a single company; tax_hike/tax_cut change
-    market_state['tax_rate'], which advance_day's monthly withholding reads
-    instead of a flat 4%. Caller already holds state_lock."""
     if random.random() >= POLITICAL_EVENT_TICK_CHANCE:
         return
     weights = [e["weight"] for e in POLITICAL_EVENTS]
@@ -283,11 +245,6 @@ def _maybe_political_event():
 
 
 def ai_rival_tick():
-    """OMNI-QUANT: a visible AI opponent, distinct from OMNI-CORE (Q&A) and
-    the dial-pad OMNI_BOTS (flavor NPCs). It has its own balance and
-    holdings and trades autonomously off the same public STOCKS prices
-    every human player sees, then shows up on /api/leaderboard and in the
-    system log like a real competitor."""
     rival = market_state["ai_rival"]
     if random.random() >= AI_RIVAL["trade_chance"]:
         return
@@ -401,8 +358,56 @@ def market_tick():
         if _tick_count % 20 == 0:
             ai_rival_tick()
 
+    _apply_admin_market_events()
+    _apply_admin_live_events()
     if _tick_count % 4 == 0:
         speak_random_bot()
+
+
+def _apply_admin_market_events():
+    """Start any admin crash/boom whose time has come: post the headline and, for the desk stocks
+    (TECH, OIL, ...), apply the one-off price shock. Economy stocks follow economy.event_factor."""
+    try:
+        from economy import MarketEvent, invalidate_events
+        with app.app_context():
+            due = MarketEvent.query.filter(
+                MarketEvent.applied.is_(False), MarketEvent.cancelled.is_(False),
+                MarketEvent.start_at <= datetime.utcnow()).order_by(MarketEvent.id).limit(10).all()
+            if not due:
+                return
+            for ev in due:
+                ev.applied = True
+                targets = list(STOCKS) if ev.symbol == "ALL" else ([ev.symbol] if ev.symbol in STOCKS else [])
+                with state_lock:
+                    for sym in targets:
+                        STOCKS[sym]["price"] = round(max(1.0, STOCKS[sym]["price"] * (1 + ev.pct)), 2)
+                        PRICE_HISTORY[sym].append(STOCKS[sym]["price"])
+                if ev.symbol == "ALL":
+                    name = "The whole market"
+                else:
+                    name = STOCKS[ev.symbol]["name"] if ev.symbol in STOCKS else ev.symbol
+                verb = "crashes" if ev.pct < 0 else "surges"
+                headline = ev.note or (f"{name} {verb} {abs(ev.pct) * 100:.0f}% in a sudden "
+                                       f"{'sell-off' if ev.pct < 0 else 'rally'}.")
+                entry = {"id": f"admin-{ev.id}", "headline": headline, "time": time.strftime("%H:%M:%S")}
+                with state_lock:
+                    market_state["political_log"].insert(0, entry)
+                    del market_state["political_log"][30:]
+                log_event(f"MARKET NEWS: {headline} ({ev.symbol} {ev.pct * 100:+.0f}%)")
+            db.session.commit()
+            invalidate_events()
+    except Exception as exc:
+        log_event(f"Market event hiccup: {exc}")
+
+
+def _apply_admin_live_events():
+    """Fire admin stimulus / levy / raffle events whose time has come."""
+    try:
+        from world import process_due_live_events
+        with app.app_context():
+            process_due_live_events()
+    except Exception as exc:
+        log_event(f"Live event hiccup: {exc}")
 
 
 def speak_random_bot():
@@ -448,15 +453,11 @@ def current_user():
     uid = session.get("user_id")
     user = db.session.get(User, uid) if uid else None
     if user is not None and not user.is_admin:
-        ensure_admin(user)   # ADMIN_USERNAMES (alex, domain) - see astra_net.py
+        ensure_admin(user)
     return user
 
 
 def admin_required(view):
-    """Gate on User.is_admin, not on any particular account. There is no
-    special-cased username anywhere in this file - see models.py's User.is_admin
-    for how an operator's own account gets flagged (admin_tools.py, run
-    locally against the real DB, never checked into source with a value)."""
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not session.get("user_id"):
@@ -490,27 +491,14 @@ def get_or_create_save(user):
     return save
 
 
-# --- Phase 10: one shared, always-running calendar --------------------------
-# Every player's "day" used to be its own client-side setInterval, paused by
-# default and drifting independently per browser tab. This replaces that with
-# a single server-side clock: day 1 starts the moment the very first account
-# on this server was created, and a day passes every DAY_TICK_SECONDS of real
-# time for everyone at once, whether or not anyone currently has a tab open.
 DAY_TICK_SECONDS = 30
 
-# A player who's been away doesn't get every missed day fully simulated and
-# retroactively punished (fired, defaulted loans, drained health) the moment
-# they come back - that would turn "stepped away for an hour" into "lost your
-# job and credit score while you weren't looking". Real days are simulated
-# up to this cap; anything beyond that just fast-forwards the calendar with
-# no fired/defaulted/drained side effects for the skipped days.
 MAX_LIVE_CATCHUP_TICKS = 5
 
 _epoch_cache = {"value": None}
 
 
 def _server_epoch():
-    """The server-wide game start time: the first account ever created here."""
     if _epoch_cache["value"] is None:
         first = db.session.query(db.func.min(User.created_at)).scalar()
         _epoch_cache["value"] = first or datetime.utcnow()
@@ -545,9 +533,6 @@ def _catch_up_day(user, save):
 
 
 def register_device(user):
-    """Upsert a LinkedDevice row for whatever's in the device_token cookie,
-    or mint a new token if there isn't one / it belongs to someone else.
-    Returns the token to set back on the response cookie."""
     token = request.cookies.get("device_token")
     device = LinkedDevice.query.filter_by(device_token=token).first() if token else None
     if not device or device.user_id != user.id:
@@ -754,12 +739,14 @@ def api_desktop_state():
     patch = request.get_json(silent=True)
     if len(raw) > 750_000 or not isinstance(patch, dict):
         return jsonify(success=False, msg="Invalid desktop state."), 400
-    allowed = {"installed_apps", "recent_apps", "open_apps", "downloads", "notepad", "window_states", "saved_files"}
+    allowed = {"installed_apps", "recent_apps", "open_apps", "downloads", "notepad", "window_states", "saved_files", "tutorial_seen"}
     if any(key not in allowed for key in patch):
         return jsonify(success=False, msg="Unknown desktop state field."), 400
     for key in ("installed_apps", "recent_apps", "open_apps", "downloads"):
         if key in patch and (not isinstance(patch[key], list) or len(patch[key]) > 100):
             return jsonify(success=False, msg="Invalid desktop state list."), 400
+    if "tutorial_seen" in patch and not isinstance(patch["tutorial_seen"], bool):
+        return jsonify(success=False, msg="Invalid tutorial flag."), 400
     if "notepad" in patch and (not isinstance(patch["notepad"], str) or len(patch["notepad"]) > 50_000):
         return jsonify(success=False, msg="Invalid notepad contents."), 400
     if "window_states" in patch:
@@ -845,10 +832,6 @@ def api_settings():
 
 
 def award_credits(user, rule_key, times=1, commit=True):
-    """Credits are cosmetic-only and only ever granted here, from the fixed
-    table in game_data.CREDIT_RULES, with a ledger row explaining why. They
-    buy profile frames and nothing else - deliberately not convertible into
-    in-game cash, so they can't distort the career economy."""
     rule = CREDIT_RULES.get(rule_key)
     if not rule or times <= 0:
         return 0
@@ -1099,8 +1082,6 @@ def api_devices_revoke():
 
 
 def _vault_authenticate(user, pin):
-    """Returns (ok: bool, error_message: str|None). Locks the vault for 10
-    minutes after 5 consecutive bad PIN attempts."""
     if not user.vault_pin_hash:
         return False, "Vault isn't set up yet."
     if user.vault_locked_until and user.vault_locked_until > datetime.utcnow():
@@ -1320,8 +1301,6 @@ def friend_remove():
 @app.route("/api/hire/offer", methods=["POST"])
 @login_required
 def hire_offer():
-    """Phase 8: real player-to-player hiring. Restricted to accepted friends
-    so it can't be used to spam strangers - see PlayerHire in models.py."""
     user = current_user()
     data = request.get_json(silent=True) or {}
     target_name = (data.get("username") or "").strip()
@@ -1402,10 +1381,6 @@ def hire_list():
 def messages_thread(username):
     user = current_user()
     target = find_user(username)
-    # Messaging no longer requires an accepted friendship - any real operator
-    # is reachable, same as email. Friendship still gates the roster-visible
-    # stuff (hiring, gifting, the FRIENDS tab itself); it was never really
-    # about who you're allowed to talk to.
     if not target:
         return jsonify(success=False, msg="No operator with that username."), 404
     if target.id == user.id:
@@ -1434,13 +1409,6 @@ def messages_thread(username):
 @app.route("/api/messages/inbox_summary")
 @login_required
 def messages_inbox_summary():
-    """Everything unread, grouped by sender, across every conversation - not
-    just friends. This is deliberately read-only: it exists so the desktop
-    can show a "while you were away" panel right after login, and nothing it
-    does marks anything read or removes anything. Opening the actual thread
-    (messages_thread, above) is still the only thing that clears a badge -
-    missed messages stay missed, and stay in the thread, until you actually
-    read them there."""
     user = current_user()
     unread_rows = (
         DirectMessage.query.filter_by(recipient_id=user.id, read_at=None)
@@ -1682,11 +1650,6 @@ _TRACE_WARNING = (
 
 
 def _run_trace():
-    """Reveals the requesting connection's own IP/user-agent/approximate
-    geolocation - and only that connection's. Gated behind the explicit
-    '/trace confirm' command shown by _TRACE_WARNING above, as close to
-    informed consent as a single text command can carry. There is no
-    argument this command accepts that lets it target anyone else."""
     ip = (request.headers.get("X-Forwarded-For", "") or request.remote_addr or "unknown")
     ip = ip.split(",")[0].strip()
     ua = request.headers.get("User-Agent", "unknown")
@@ -1737,11 +1700,6 @@ def _create_alert_from_command(user, arg):
 
 
 def _compute_positions(save, stocks):
-    """Cost basis, live value and unrealized P&L per open position, plus a
-    simple concentration read on the whole book. Shared by /api/game/
-    positions and the OMNI-CORE console snapshot so both surfaces agree on
-    the numbers. Returns empty structures rather than raising when there's
-    no active career, so callers don't have to special-case that."""
     empty = {"positions": [], "totals": {}, "risk": {}}
     if not save:
         return empty
@@ -1803,9 +1761,6 @@ def _compute_positions(save, stocks):
 
 
 def _omni_state_snapshot(user):
-    """Live account/session snapshot handed to OMNI-CORE so its slash
-    commands (and /whoami) answer from real numbers instead of an empty
-    or hallucinated state."""
     save = GameSave.query.filter_by(user_id=user.id).first()
     tracks = MusicTrack.query.filter_by(user_id=user.id).all()
     pos_data = _compute_positions(save if save and save.active else None, STOCKS)
@@ -1844,9 +1799,6 @@ def game_start():
     save.active = True
     save.age = 20
     save.balance = 2000.0
-    # New operators start UNEMPLOYED (same state quit_job/firing already use).
-    # MYNT, MARKETS, WORK DESK etc. are gated on having a job or a business,
-    # so the first thing to do is go find one in CAREER.
     save.salary = 0.0
     save.job_title = "Unemployed"
     save.spouse = None
@@ -1992,12 +1944,9 @@ def game_bank_repay():
 
 
 def _maybe_random_event(save, events):
-    """Rolls once per advance_day for a personal random event - never
-    touches global market state, so it can't affect other players. Applies
-    its effect directly to `save` and appends a flavor line to `events`."""
     chance = RANDOM_EVENT_DAILY_CHANCE
     if save.ai_buff_active("random_event_shield"):
-        chance *= 0.5  # a live VEX relay, bought through the VPN app - flavor, not zero
+        chance *= 0.5
     if random.random() >= chance:
         return
     pool = RANDOM_EVENTS
@@ -2011,7 +1960,7 @@ def _maybe_random_event(save, events):
         events.append(ev["text"].format(amt=f"${amt:.2f}"))
     elif ev["effect"] == "cash_flat_if_staff":
         if not save.employees():
-            return  # no staff, no staff theft
+            return
         amt = round(random.uniform(ev["min"], ev["max"]), 2)
         amt = min(amt, max(0, save.balance))
         save.balance -= amt
@@ -2030,10 +1979,6 @@ def _maybe_random_event(save, events):
 
 
 def _process_player_hires(user, save, events):
-    """Phase 8 payroll: pays every active hire where this user is the
-    employer, once per advance_day call (advance_day already represents one
-    day passing). Skips - and flags - payroll it can't afford rather than
-    going further into debt or auto-firing anyone."""
     hires = PlayerHire.query.filter_by(employer_id=user.id, status="active").all()
     if not hires:
         return
@@ -2052,13 +1997,6 @@ def _process_player_hires(user, save, events):
 
 
 def _process_player_company_payroll(user, save, events):
-    """Pays daily salary (business.salary/30, the same monthly-prorated math
-    an NPC job uses) from this business owner's balance to every real
-    operator currently employed at their company (job_status ==
-    'employed_player', employer_user_id == this user). Runs on the
-    EMPLOYER's own advance_day - same honest constraint _process_player_hires
-    already has: staff only get paid when the founder shows up. Never
-    conjures cash the way the NPC-job branch below does."""
     if save.job_status != "business_owner":
         return
     staff = GameSave.query.filter_by(employer_user_id=user.id, job_status="employed_player").all()
@@ -2075,9 +2013,6 @@ def _process_player_company_payroll(user, save, events):
 
 
 def _maybe_sick_day(save, events):
-    """High sustained stress (low health) can force a sick day - once per
-    day, and it actually helps (health recovery) at the cost of the day's
-    hustle, same trade-off a real forced day off would be."""
     if save.last_sick_day == save.day:
         return
     stress = 100 - (save.health or 80)
@@ -2087,25 +2022,18 @@ def _maybe_sick_day(save, events):
         return
     save.last_sick_day = save.day
     save.health = min(100, (save.health or 80) + BURNOUT_RULES["sick_day_health_recovery"])
-    save.last_active_day = save.day  # counts as "acted" so boss doesn't also ding you for it
+    save.last_active_day = save.day
     events.append("Burnout catches up with you - you're forced to take a sick day. "
                    "(Health recovered, but no hustle today.)")
     log_event(f"{save.name} forced sick day (burnout).")
 
 
 def _run_day_tick(user, save, events):
-    """One day's worth of state changes - unchanged from before, just moved
-    out of the route so both a manual call and the automatic real-time
-    catch-up run the exact same logic."""
     benefits = _apply_employee_benefits(save)
 
-    # --- Phase 7: random events ---------------------------------------------
     _maybe_random_event(save, events)
-    # --- Phase 7: burnout forced sick day ------------------------------------
     _maybe_sick_day(save, events)
-    # --- Phase 8: pay any real players you've hired --------------------------
     _process_player_hires(user, save, events)
-    # --- Privacy pass: pay any real players employed at your company ---------
     _process_player_company_payroll(user, save, events)
 
     acted_today = save.last_active_day == save.day
@@ -2134,9 +2062,6 @@ def _run_day_tick(user, save, events):
         save.balance += revenue
         save.add_profit(revenue)
     elif save.job_status != "employed_player":
-        # employed_player is paid by the employer's own advance_day, above -
-        # not manufactured here, since that money has to come from a real
-        # account rather than out of nowhere.
         save.balance += save.salary / 30
         save.add_profit(save.salary / 30)
 
@@ -2160,14 +2085,6 @@ def _run_day_tick(user, save, events):
             save.add_profit(music_income)
             events.append(f"Music royalties: +${music_income:.2f} from {len(tracks)} track(s).")
 
-    # --- Phase 7: daily loan interest + missed-payment consequences -------
-    # Compounds daily off each active loan's APR (apr/365), same pattern as
-    # the rest of this function's day-tick math. A loan with no payment
-    # logged in 7 days counts as missed: credit score takes a hit and the
-    # payment window resets so it only dings once per missed week, not once
-    # per day. Three misses sends it to collections - loan is written off
-    # as defaulted (no further interest, but the credit hit is heavy and
-    # BANK_TIERS gating means recovery has to happen the slow way).
     loans = save.loans()
     if loans:
         loan_events = []
@@ -2221,10 +2138,6 @@ def _run_day_tick(user, save, events):
         save.weekly_commission = 0.0
         save.health = max(0, save.health - 1)
 
-        # --- Phase 7: probation expiry -------------------------------------
-        # A strike-2 salary cut (see _maybe_trigger_audit) is time-boxed, not
-        # permanent - restore the pre-probation salary once the clock's up,
-        # same as the fine and termination consequences are one-time hits.
         if save.probation_until_week is not None and save.week >= save.probation_until_week:
             if save.probation_pre_salary is not None and save.job_status == "employed":
                 save.salary = save.probation_pre_salary
@@ -2322,9 +2235,6 @@ def game_trade_share():
 @app.route("/api/game/positions")
 @login_required
 def api_positions():
-    """Per-position cost basis, live value, unrealized P&L, plus a
-    portfolio-wide concentration/diversification read. Powers both the
-    CALC panel's DCA tab and the /positions and /risk console commands."""
     user = current_user()
     save = GameSave.query.filter_by(user_id=user.id).first()
     data = _compute_positions(save if save and save.active else None, STOCKS)
@@ -2393,11 +2303,6 @@ def api_alert_delete(alert_id):
 @app.route("/api/mining/estimate", methods=["POST"])
 @login_required
 def api_mining_estimate():
-    """Real Bitcoin mining math (mining_calc.py) against the real, live
-    BTC/USDT price and network difficulty cached on market_state - the same
-    "the numbers are real even where the game isn't" rule the arbitrage
-    engine follows. Nothing here is simulated; it's just math anyone could
-    run themselves with the same public inputs."""
     data = request.get_json(silent=True) or {}
     btc_price = market_state.get("btc_price")
     difficulty = market_state.get("btc_difficulty")
@@ -2511,12 +2416,6 @@ def game_boss_review():
 
 
 def _resolve_firm(firm_id):
-    """Returns (firm_dict, player_employer_user_id). `firm_dict` is either a
-    static NPC entry from JOB_LISTINGS, or - for firm_id shaped
-    'player:<gamesave id>' - a JOB_LISTINGS-shaped dict synthesized from a
-    real operator's open company posting, so apply_job/interview_answer/
-    game_jobs don't need two parallel code paths. player_employer_user_id is
-    None for an NPC firm."""
     if isinstance(firm_id, str) and firm_id.startswith("player:"):
         try:
             gs_id = int(firm_id.split(":", 1)[1])
@@ -2538,31 +2437,20 @@ def _resolve_firm(firm_id):
     return firm, None
 
 
-# ---------------------------------------------------------------------------
-# WORK SHIFTS - real work, gated behind actually having a job. A shift is 4
-# tasks (2 math, 1 ledger, 1 essay) generated from a random seed stored on
-# the save; the seed regenerates the exact same tasks at grading time so the
-# correct answers are never sent to the browser while the shift is open.
-# ---------------------------------------------------------------------------
 def _build_work_shift(seed):
     rng = random.Random(seed)
 
-    # Task 1: linear equation, integer solution by construction.
     x = rng.randint(2, 19)
     a = rng.randint(2, 9)
     b = rng.randint(-40, 60)
     c = a * x + b
     algebra = {"a": a, "b": b, "c": c, "answer": x}
 
-    # Task 2: a commission/percentage calculation, the kind a broker desk
-    # actually does daily.
     pct = rng.choice([2, 3, 5, 7, 8, 10, 12, 15, 18, 20])
     base = rng.randint(1200, 48000)
     percent_answer = round(base * pct / 100.0, 2)
     percent = {"pct": pct, "base": base, "answer": percent_answer}
 
-    # Task 3: ledger reconciliation - a handful of line items to add to a
-    # starting balance.
     start_balance = rng.choice([5000, 8000, 10000, 12500, 15000])
     n_items = rng.randint(4, 6)
     items = []
@@ -2574,14 +2462,12 @@ def _build_work_shift(seed):
         running += amount
     ledger = {"start_balance": start_balance, "items": items, "answer": round(running, 2)}
 
-    # Task 4: essay against a prompt.
     prompt = rng.choice(ESSAY_PROMPTS)
 
     return {"algebra": algebra, "percent": percent, "ledger": ledger, "essay_prompt": prompt}
 
 
 def _work_shift_public(shift):
-    """Strip every answer before this goes to the client."""
     return {
         "algebra": {"a": shift["algebra"]["a"], "b": shift["algebra"]["b"], "c": shift["algebra"]["c"]},
         "percent": {"pct": shift["percent"]["pct"], "base": shift["percent"]["base"]},
@@ -2646,9 +2532,6 @@ def work_shift_submit():
 
     correct_count = sum(1 for v in results.values() if v)
 
-    # Payout scales with your actual salary tier, not a flat number - a
-    # Managing Director's shift is worth more than a Junior Floor Broker's,
-    # same as the passive daily salary already does.
     base_payout = round((save.salary or 2000.0) * 0.06, 2)
     payout = round(base_payout * (correct_count / 4.0), 2)
 
@@ -2680,11 +2563,6 @@ def work_shift_submit():
     )
 
 
-# ---------------------------------------------------------------------------
-# REPORTS - any logged-in operator can file one; only an admin (User.is_admin)
-# can list or resolve them. See admin_required above and admin_tools.py for
-# how an account actually gets flagged admin.
-# ---------------------------------------------------------------------------
 @app.route("/api/reports", methods=["POST"])
 @login_required
 def reports_create():
@@ -2739,9 +2617,6 @@ def admin_reports_resolve(report_id):
 @app.route("/api/admin/users")
 @admin_required
 def admin_users_list():
-    """A trimmed operator list for the admin tab's cross-check view - no
-    passwords, no vault data, just what a moderator actually needs: who they
-    are, whether they're flagged, and their basic career state."""
     q = (request.args.get("q") or "").strip()
     query = User.query
     if request.args.get("admins_only") == "1":
@@ -2820,8 +2695,6 @@ def game_jobs():
         entry["credit_locked"] = bool(min_score and (save.credit_score or 0) < min_score)
         listings.append(entry)
 
-    # Real companies other operators founded with their $20,000 and opened
-    # a role on - listed the same shape as an NPC firm so one UI covers both.
     player_rows = (GameSave.query
                    .filter(GameSave.job_status == "business_owner",
                            GameSave.hiring_open.is_(True),
@@ -2941,9 +2814,6 @@ def game_abandon_interview():
 @app.route("/api/game/company/set_listing", methods=["POST"])
 @login_required
 def game_company_set_listing():
-    """Business owners open or close ONE public role on their own company.
-    Deliberately capped at one at a time - this is a hiring desk, not a job
-    board spam vector."""
     data = request.get_json(silent=True) or {}
     user = current_user()
     save = get_or_create_save(user)
@@ -2976,7 +2846,6 @@ def game_company_set_listing():
 @app.route("/api/game/company/roster")
 @login_required
 def game_company_roster():
-    """The founder's view of who they've actually hired for real."""
     user = current_user()
     save = get_or_create_save(user)
     if save.job_status != "business_owner":
@@ -3114,10 +2983,6 @@ def game_fire_employee():
 
 
 def _apply_employee_benefits(save):
-    """Sums the passive effects of every hired employee. Returns a dict of
-    aggregated deltas the caller applies where relevant (advance_day for
-    passive income/bill discount/boss mood shield, convince routes for
-    commission/investor boosts)."""
     totals = {"passive_income": 0.0, "bill_discount": 0.0, "boss_mood_shield": 0,
               "commission_boost": 0.0, "investor_boost": 0.0}
     for e in save.employees():
@@ -3205,9 +3070,6 @@ def game_vacation_list():
     employees = save.employees()
     requests_ = save.vacation_requests()
 
-    # Roughly a 1-in-5 chance per employee, at most once per in-game day,
-    # that a new vacation request appears - keeps AI calls bounded instead
-    # of firing on every poll.
     if employees and save.last_vacation_day != save.day:
         save.last_vacation_day = save.day
         pending_names = {r["employee_name"] for r in requests_ if r["status"] == "pending"}
@@ -3223,7 +3085,7 @@ def game_vacation_list():
                     "role": emp.get("role", ""), "message": msg, "status": "pending",
                     "day": save.day,
                 })
-                break  # at most one new request per day-tick, still bounded
+                break
         save.set_vacation_requests(requests_)
         db.session.commit()
 
@@ -3235,7 +3097,7 @@ def game_vacation_list():
 def game_vacation_respond():
     data = request.get_json(silent=True) or {}
     req_id = data.get("id")
-    decision = data.get("decision")  # approve_paid | approve_unpaid | deny
+    decision = data.get("decision")
     if decision not in ("approve_paid", "approve_unpaid", "deny"):
         return jsonify(success=False, msg="Invalid decision.")
 
@@ -3254,7 +3116,7 @@ def game_vacation_respond():
     if decision == "approve_paid":
         morale_delta = 15
         if emp:
-            cash_delta = -round(emp.get("salary", 0) * 0.25, 2)  # a few days' pay
+            cash_delta = -round(emp.get("salary", 0) * 0.25, 2)
             save.balance += cash_delta
     elif decision == "approve_unpaid":
         morale_delta = 5
@@ -3310,10 +3172,6 @@ def game_assignments():
 
 
 def _build_assignment_payload(template):
-    """Builds the puzzle data for a given assignment kind. Answers are
-    included in the payload but never rendered by the frontend for
-    reconcile/spot_the_error - it's checked server-side on submit against
-    what's stored here, keyed by the assignment id."""
     kind = template["kind"]
     if kind == "reconcile":
         nums = [round(random.uniform(500, 5000), 2) for _ in range(4)]
@@ -3368,9 +3226,6 @@ def game_assignment_submit():
         except (TypeError, ValueError):
             correct = False
 
-    # --- Phase 7: burnout error rate ----------------------------------------
-    # High sustained stress (low health) can flip an otherwise-correct
-    # answer into a fumble - flavor is exhaustion, not incompetence.
     burnout_flub = False
     stress = 100 - (save.health or 80)
     if correct and stress >= BURNOUT_RULES["error_stress_threshold"] \
@@ -3403,18 +3258,8 @@ def game_assignment_submit():
 
 
 def _maybe_trigger_audit(save, kind):
-    """Rolls whether a failed compliance-flavored assignment escalates into
-    a real audit strike, and applies that strike's consequence. Returns an
-    event dict for the frontend (or None if nothing fired), and always
-    appends anything that DOES fire to save.audit_log so it survives on the
-    compliance panel after the fact. Called with a pending db.session change
-    already in flight - caller commits."""
     chance = AUDIT_RULES["trigger_chance"].get(kind, 0.0)
     if save.ai_buff_active("audit_shield"):
-        # GOLIATH relay, bought through the VPN app - cuts detection odds
-        # hard but never to zero. Same fictional "deterrent, not real
-        # security" framing this codebase already uses for its devtools
-        # checks; it is a game mechanic, not a real anonymization tool.
         chance *= 0.35
     if chance <= 0 or random.random() >= chance:
         return None
@@ -3462,15 +3307,6 @@ def _maybe_trigger_audit(save, kind):
     return entry
 
 
-# --- Privacy pass: VPN app, wiring the dead AI_CONSULTS system alive -------
-# AI_CONSULTS has existed in game_data.py since Phase 8 (four bot-flavored
-# buffs, costs and durations all defined) but had no route, no purchase and
-# no consumer anywhere - GameSave.ai_buff_json/set_ai_buffs()/ai_buff_active()
-# were the only pieces actually built. The VPN app is that missing purchase
-# UI, reskinned as a privacy/anonymization tool; audit_shield and
-# random_event_shield are now genuinely consumed above and in
-# _maybe_random_event. Same honest framing as this codebase's own devtools
-# checks: a real, working game mechanic, not a real anonymization tool.
 @app.route("/api/game/privacy/status")
 @login_required
 def game_privacy_status():
@@ -3504,13 +3340,6 @@ def game_privacy_consult():
     return jsonify(success=True, effect=spec["effect"], expires_day=expires, balance=save.balance)
 
 
-# --- Stage 14: OMNI-BROWSER fake app-store scam sites ------------------------
-# The browser's search results include a handful of too-good-to-be-true
-# "free/cracked app" links (astra_stage14_appstore.js decides which - this
-# route only executes the consequence). Clicking one of those, instead of a
-# real App Store listing, calls this once and takes a real cut of the
-# player's real balance - same "fictional in-game risk, real economy
-# consequence" pattern this codebase already uses for audit strikes.
 @app.route("/api/game/browser/scam", methods=["POST"])
 @login_required
 def game_browser_scam():
@@ -3573,7 +3402,7 @@ def game_investor_reply():
     result = ai.investor_inbox_reply(client, target["message"], reply_text, user.language)
     invests = result["invests"]
     if invests and random.random() < benefits["investor_boost"]:
-        pass  # already investing; boost only helps borderline declines below
+        pass
     if not invests and benefits["investor_boost"] > 0 and random.random() < benefits["investor_boost"]:
         invests = True
         result["reply"] += " (Your Client Relations team's follow-up sealed it.)"
@@ -3635,7 +3464,7 @@ def game_casino_play():
         if reels[0] == reels[1] == reels[2]:
             payout = round(bet * SLOT_PAYOUTS.get(reels[0], 0), 2)
         elif len(set(reels)) == 2:
-            payout = round(bet * 1.2, 2)  # small consolation for a pair
+            payout = round(bet * 1.2, 2)
         detail = {"reels": reels}
 
     elif game == "coinflip":
@@ -3646,16 +3475,13 @@ def game_casino_play():
         detail = {"choice": choice, "result": result, "won": won}
 
     elif game == "dice":
-        guess = data.get("guess")  # "high" (>=4) or "low" (<=3) on a d6
+        guess = data.get("guess")
         roll = random.randint(1, 6)
         won = (guess == "high" and roll >= 4) or (guess == "low" and roll <= 3)
         payout = round(bet * 1.9, 2) if won else 0.0
         detail = {"roll": roll, "guess": guess, "won": won}
 
     elif game == "blackjack_quick":
-        # Single-draw simplified blackjack: player and house each get one
-        # card total (2-21 range weighted like two cards); closer to 21
-        # without busting wins. Fast, still genuinely random.
         def draw_total():
             total = random.randint(2, 21)
             return total
@@ -3735,9 +3561,6 @@ def leaderboard():
 def get_active_room(user):
     room_id = session.get("coop_room_id")
     if not room_id:
-        # No room remembered in this browser session (new login, a different
-        # device, or a hop to another server): fall back to the player's saved
-        # membership so a syndicate follows the account, not the cookie.
         m = (CoopMembership.query.filter_by(user_id=user.id)
              .order_by(CoopMembership.id.desc()).first())
         if not m:
@@ -3791,11 +3614,6 @@ def coop_join():
 @app.route("/api/coop/leave", methods=["POST"])
 @login_required
 def coop_leave():
-    """Leaving used to only drop the session key, so the membership row
-    survived and the member list kept showing people who had walked out. It
-    now removes the row - and if the founder is the one leaving, ownership
-    passes to the longest-standing remaining member instead of stranding the
-    room with an owner who isn't in it."""
     user = current_user()
     room = get_active_room(user)
     session.pop("coop_room_id", None)
@@ -3841,9 +3659,6 @@ def coop_state():
               db.session.query(User).join(CoopBan, CoopBan.user_id == User.id)
               .filter(CoopBan.room_id == room.id).all()]
 
-    # --- Phase 8: "online mode" - a presence heartbeat plus a per-member
-    # breakdown of who's actually been trading in this room (solo actions,
-    # visible individually even though the desk itself is pooled).
     my_membership = CoopMembership.query.filter_by(room_id=room.id, user_id=user.id).first()
     if my_membership:
         my_membership.last_seen = datetime.utcnow()
@@ -3885,20 +3700,16 @@ def coop_advance_day():
         hit_target = room.weekly_commission >= room.weekly_target
         room.balance -= room.weekly_bills
 
-        # --- Phase 8: sentiment applies as a shared bills swing, then decays.
-        # This is the "solo actions affect the others" layer: every member's
-        # own buy/sell nudged this meter (see coop_trade_share below), and
-        # the whole room now feels the collective result together.
         sentiment = max(-100.0, min(100.0, room.sentiment or 0.0))
         swing = round(room.weekly_bills * (sentiment / 100.0) * 0.15, 2)
         if swing:
-            room.balance += swing  # positive sentiment discounts bills, negative adds a surcharge
+            room.balance += swing
             mood = "bullish" if swing > 0 else "bearish"
             db.session.add(CoopLogEntry(
                 room_id=room.id, username="SYSTEM",
                 message=f"Syndicate sentiment was {mood} ({sentiment:+.0f}) - bills adjusted ${swing:+.2f}.",
             ))
-        room.sentiment = round(sentiment * 0.7, 1)  # decay back toward neutral
+        room.sentiment = round(sentiment * 0.7, 1)
 
         room.weekly_target = round(room.weekly_target * 1.12, 2)
         room.weekly_bills = round(room.weekly_bills * 1.08, 2)
@@ -3937,22 +3748,18 @@ def coop_trade_share():
         room.balance -= total
         shares[symbol] = shares.get(symbol, 0) + qty
         note = f"bought {qty} {symbol} for ${total:.2f}"
-        sentiment_nudge = total / 200.0  # buying reads as bullish
+        sentiment_nudge = total / 200.0
     elif action == "sell":
         if shares.get(symbol, 0) < qty:
             return jsonify(success=False, msg="Insufficient shares owned")
         shares[symbol] -= qty
         room.balance += total
         note = f"sold {qty} {symbol} for ${total:.2f}"
-        sentiment_nudge = -total / 200.0  # selling reads as bearish
+        sentiment_nudge = -total / 200.0
     else:
         return jsonify(success=False, msg="Unknown action")
 
     room.set_shares(shares)
-    # --- Phase 8: this member's own solo trade nudges the room's shared
-    # sentiment meter (felt by everyone at the next weekly rollover) and is
-    # tracked against their own membership row so "who's actually driving
-    # this room" is visible per-member, not just as a pooled total.
     room.sentiment = round(max(-100.0, min(100.0, (room.sentiment or 0.0) + sentiment_nudge)), 1)
     membership = CoopMembership.query.filter_by(room_id=room.id, user_id=user.id).first()
     if membership:
@@ -3985,9 +3792,6 @@ def coop_chat():
 
 
 def _order_book(symbol, price):
-    """A plausible five-level book around the current price. Deterministic per
-    (symbol, price) so it doesn't jitter between two renders of the same
-    quote - it's flavor, not a real depth feed, and the UI says so."""
     rng = random.Random(f"{symbol}:{price:.2f}")
     tick = max(0.01, round(price * 0.0004, 2))
     rows = []
@@ -4002,9 +3806,6 @@ def _order_book(symbol, price):
 
 
 def _stock_headlines(symbol, stock):
-    """Real entries from the live system log first (the news events in
-    market_tick actually moved this price), padded with sector flavor so the
-    panel is never empty on a fresh boot."""
     name = stock["name"]
     with state_lock:
         logs = list(market_state["global_logs"])
@@ -4072,9 +3873,6 @@ def game_stock_detail(symbol):
 @app.route("/api/game/stock/<symbol>/quote")
 @login_required
 def game_stock_quote(symbol):
-    """Just the numbers, for the desk's live price ticker - cheap enough to
-    poll every few seconds without re-rendering the whole screen (and
-    without wiping whatever quantity you were typing into the ticket)."""
     symbol = (symbol or "").upper()
     if symbol not in STOCKS:
         return jsonify(success=False), 404
@@ -4147,8 +3945,6 @@ def credits_buy_avatar():
 @app.route("/api/credits/buy_title", methods=["POST"])
 @login_required
 def credits_buy_title():
-    """A custom operator title replaces the rank ASTRA computes for you. Pure
-    cosmetics - it is shown on the profile and nowhere the score is read."""
     data = request.get_json(silent=True) or {}
     user = current_user()
     title = re.sub(r"\s+", " ", (data.get("title") or "")).strip()[:32]
@@ -4203,9 +3999,6 @@ def credits_buy_frame():
 @app.route("/api/credits/buy_sink", methods=["POST"])
 @login_required
 def credits_buy_sink():
-    """Phase 8: the three new black-market items added to CREDIT_SINKS.
-    Each is a one-shot spend, not a persistent unlock like frames/emblems -
-    resolved here rather than in credits_state()."""
     data = request.get_json(silent=True) or {}
     sink_id = data.get("sink_id")
     sink = CREDIT_SINKS.get(sink_id)
@@ -4228,7 +4021,7 @@ def credits_buy_sink():
         line = re.sub(r"\s+", " ", (data.get("text") or "")).strip()[:120] or "You're just a model."
         log_event(f"[{user.username} -> OMNI-QUANT] {line}")
         msg = "Taunt sent. OMNI-QUANT did not react."
-    else:  # priority_execution
+    else:
         msg = "Priority execution active for 7 days."
 
     user.credits = (user.credits or 0) - cost
@@ -4332,10 +4125,6 @@ def _clean_share_map(raw):
 
 
 def _slice_offer(fraction, cash, shares):
-    """Scale one side of an offer down for a partial fill. Shares are whole
-    things, so every line floors - which is why a slice small enough to round
-    everything to zero has to be rejected by the caller rather than settled as
-    an empty trade."""
     cash = round((cash or 0.0) * fraction, 2)
     shares = {k: int(v * fraction) for k, v in (shares or {}).items()}
     return cash, {k: v for k, v in shares.items() if v > 0}
@@ -4357,8 +4146,6 @@ def _get_draft(user_id, target_id, create=False):
 
 
 def _can_cover(save, cash, shares):
-    """Does this save actually hold what the offer promises? Returns a
-    human-readable complaint, or None if it's all there."""
     if cash and (save.balance or 0.0) + 1e-9 < cash:
         return f"short ${cash - (save.balance or 0.0):,.2f} in cash"
     held = save.shares()
@@ -4626,9 +4413,6 @@ def exchange_respond():
 @app.route("/api/exchange/counter", methods=["POST"])
 @login_required
 def exchange_counter():
-    """Answer an incoming offer with your own. The original is marked
-    `countered` (so it can't also be accepted), and the terms land in your
-    draft with the sides swapped - a starting point to edit, not a send."""
     data = request.get_json(silent=True) or {}
     user = current_user()
     offer = db.session.get(TradeOffer, data.get("id"))
@@ -4755,7 +4539,7 @@ def coop_transfer():
 
 
 
-COOP_POLL_TIMEOUT = float(os.environ.get("COOP_POLL_TIMEOUT", "0"))  # 0 = answer immediately, never park a worker
+COOP_POLL_TIMEOUT = float(os.environ.get("COOP_POLL_TIMEOUT", "0"))
 COOP_POLL_INTERVAL = 0.6
 
 
@@ -4787,9 +4571,6 @@ def coop_poll():
         time.sleep(COOP_POLL_INTERVAL)
 
 
-# ---- Stage 20/21: world (regimes, crime, BLABBER, admin+) and economy
-# (currencies, wallet, inflation). Both register their own blueprints and
-# need the helpers defined above, so they must come after everything else.
 from world import init_world
 import world
 from economy import init_economy, cpi
@@ -4803,8 +4584,6 @@ init_roles(app, login_required, current_user, get_or_create_save, price_index=cp
 from learn import init_learn
 init_learn(app, login_required, current_user, get_or_create_save, price_index=cpi)
 
-# ---- Stage 25: the brokerage desk (real portfolio/orders/bin, replaces MYNT's
-# hardcoded $42,150 and fake "FETCHING..." ticker) and the mail/privacy hub.
 from desk import init_desk
 init_desk(app, login_required, current_user, get_or_create_save, STOCKS, PRICE_HISTORY,
           price_index=cpi, log_event=log_event)
@@ -4815,6 +4594,32 @@ init_mail_privacy(app, login_required, current_user, get_or_create_save, price_i
 from astra_net import init_net
 init_net(app, login_required, current_user)
 integrity.init_app(app)
+
+
+@app.route("/manifest.webmanifest")
+def pwa_manifest():
+    resp = jsonify(
+        name="Astra - Salaryman", short_name="Astra",
+        description="Brokerage career sim - multiplayer.",
+        start_url="/intro", scope="/", display="standalone",
+        background_color="#000000", theme_color="#00ffcc",
+        icons=[
+            {"src": "/static/img/astra_icon_192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/static/img/astra_icon_512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/static/img/astra_icon_maskable_512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+    )
+    resp.headers["Content-Type"] = "application/manifest+json"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/sw.js")
+def pwa_service_worker():
+    resp = app.send_static_file("astra_sw.js")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 if __name__ == '__main__':
