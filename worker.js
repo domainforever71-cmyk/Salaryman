@@ -5,7 +5,7 @@
 
 export default {
   async fetch(request, env) {
-    const backend = String(env.BACKEND_URL || "").trim().replace(/\/+$/, "");
+    const backend = String(env.BACKEND_URL || "https://astra-backend-ow4l.onrender.com").trim().replace(/\/+$/, "");
     if (!/^https:\/\//i.test(backend)) {
       return new Response("Astra: BACKEND_URL is not set (must start with https://).", { status: 503 });
     }
