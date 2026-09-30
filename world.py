@@ -5,6 +5,7 @@ import os
 import random
 import secrets
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import case, func
@@ -12,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from models import db, User, GameSave, Report
 from astra_net import find_user
+import law
 
 
 REGIMES = {
@@ -453,11 +455,13 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         leader, votes = max(tally.items(), key=lambda kv: kv[1])
         if leader != w.regime and votes * 2 > total and \
                 (_now() - (w.regime_changed_at or _now())).total_seconds() >= REGIME_COOLDOWN_MIN * 60:
+            prev_regime = w.regime
             changed = WorldState.query.filter(WorldState.id == 1, WorldState.regime == w.regime).update(
                 {WorldState.regime: leader, WorldState.regime_changed_at: _now()}, synchronize_session=False)
             db.session.commit()
             if changed:
                 _apply_regime(leader)
+                law.note_regime_change(prev_regime, leader, "vote", f"{votes} of {total} votes")
         return tally, quorum
 
     @bp.route("/api/world/state")
@@ -1076,6 +1080,7 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         w.regime, w.regime_changed_at = choice, _now()
         db.session.commit()
         _apply_regime(choice)
+        law.note_regime_change(old, choice, "admin", "")
         _log_admin("set_regime", choice, f"was {old}")
         return jsonify(success=True, msg=f"Regime set to {REGIMES[choice]['label']}.")
 
@@ -1345,5 +1350,23 @@ def init_world(app, login_required, admin_required, current_user, get_or_create_
         db.session.commit()
         return jsonify(success=True)
 
+    global _law_rt
+    _law_rt = law.init_law(app, login_required, admin_required, current_user, SimpleNamespace(
+        rules=_rules, REGIMES=REGIMES, CRIMES=CRIMES, record=_record, adjust=_adjust_balance, take=_take_up_to,
+        log_admin=_log_admin, price_index=price_index, clean=_clean, find_user=find_user, world=_world,
+        active_count=_active_count, current_wanted=_current_wanted, jail_left=_jail_seconds_left,
+        RegimeVote=RegimeVote, Offense=Offense, vote_window_h=REGIME_VOTE_WINDOW_H,
+        regime_cooldown_min=REGIME_COOLDOWN_MIN, wanted_decay=WANTED_DECAY_PER_MIN, jail_cap=JAIL_CAP_MIN,
+        bail_per_min=BAIL_PER_MINUTE))
     app.register_blueprint(bp)
     return bp
+
+
+_law_rt = None
+
+
+def process_due_court_cases():
+    """Called from the server tick: hears due civil cases."""
+    if _law_rt is not None:
+        return _law_rt.process_due_cases()
+    return 0

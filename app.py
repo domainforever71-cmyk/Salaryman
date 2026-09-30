@@ -403,9 +403,10 @@ def _apply_admin_market_events():
 def _apply_admin_live_events():
     """Fire admin stimulus / levy / raffle events whose time has come."""
     try:
-        from world import process_due_live_events
+        from world import process_due_live_events, process_due_court_cases
         with app.app_context():
             process_due_live_events()
+            process_due_court_cases()
     except Exception as exc:
         log_event(f"Live event hiccup: {exc}")
 
@@ -561,7 +562,11 @@ def _set_device_cookie(resp, token):
 def index():
     if not session.get("user_id"):
         return redirect(url_for("intro_page"))
-    return render_template("index.html", username=session.get("username"))
+    html = render_template("index.html", username=session.get("username"))
+    tag = '<script src="%s"></script>' % url_for("static", filename="astra_stage27_law.js")
+    if "astra_stage27_law.js" not in html:
+        html = html.replace("</body>", tag + "</body>", 1) if "</body>" in html else html + tag
+    return html
 
 @app.route("/intro")
 def intro_page():

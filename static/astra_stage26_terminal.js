@@ -503,6 +503,11 @@
       '  /r raffle <prize> <winners> [opts]   random active players win a prize',
       '  /r halt <10m|2h> [reason]      freeze all trading;  /r resume ends it',
       '  /r live | /r cancelevent <id>  list / cancel live events',
+      ' Courts and law (players read the code at /law in the game)',
+      '  /r court [status]              list civil cases (filed, settlement, decided)',
+      '  /r verdict <id> <plaintiff|defendant|dismiss> [note]   rule on an open case yourself',
+      '  /r disbar <user> | /r reinstate <user>   lawyer licences',
+      '  /r pardon <user> <reason>      wipe convictions, wanted rating and custody',
       ' Market',
       '  /r crash|boom <SYMBOL|all> <pct> [opts] | /r market | /r cancel <id> | /r symbols',
       '  /r stats                       server overview',
@@ -862,6 +867,44 @@
     })
   };
   Object.keys(LIVE_COMMANDS).forEach(function (k) { COMMANDS[k] = LIVE_COMMANDS[k]; });
+
+
+  // ---------------------------------------------------------------- courts
+  var COURT_COMMANDS = {
+    court: safe(function (args) {
+      var q = args[0] ? '?status=' + encodeURIComponent(args[0]) : '';
+      return adm('GET', '/api/admin/law/cases' + q).then(function (r) {
+        if (!r.success) { say(r); return; }
+        if (!r.cases.length) { print('no court cases' + (args[0] ? ' with status ' + args[0] : '') + '.', 's26-dim'); return; }
+        r.cases.forEach(function (c) {
+          print('#' + c.id + ' ' + c.claim + ' ' + c.plaintiff + ' v. ' + c.defendant + ' ' + money(c.amount) + '  [' + c.status +
+            (c.outcome ? '/' + c.outcome : '') + ']' + (c.status === 'filed' || c.status === 'settlement' ? '  hearing in ' + fmtDur(c.hearing_in_s) : ''),
+            c.status === 'filed' || c.status === 'settlement' ? 's26-warn' : 's26-dim');
+        });
+        print('rule on an open case with /r verdict <id> plaintiff|defendant|dismiss [note]', 's26-dim');
+      });
+    }),
+    verdict: safe(function (args) {
+      if (!need(args, 2, '/r verdict <case id> <plaintiff|defendant|dismiss> [note]')) return;
+      var id = parseInt(String(args[0]).replace('#', ''), 10);
+      if (!(id > 0)) throw new Error('case id must be a number (see /r court).');
+      var v = args[1].toLowerCase(); if (v === 'dismiss') v = 'dismissed';
+      return adm('POST', '/api/admin/law/case/' + id + '/rule', { verdict: v, note: args.slice(2).join(' ') }).then(function (r) { say(r); });
+    }),
+    disbar: safe(function (args) {
+      if (!need(args, 1, '/r disbar <user>')) return;
+      return adm('POST', '/api/admin/law/disbar', { username: args[0] }).then(function (r) { say(r); });
+    }),
+    reinstate: safe(function (args) {
+      if (!need(args, 1, '/r reinstate <user>')) return;
+      return adm('POST', '/api/admin/law/disbar', { username: args[0], reinstate: true }).then(function (r) { say(r); });
+    }),
+    pardon: safe(function (args) {
+      if (!need(args, 2, '/r pardon <user> <reason>')) return;
+      return adm('POST', '/api/admin/law/pardon', { username: args[0], reason: args.slice(1).join(' ') }).then(function (r) { say(r); });
+    })
+  };
+  Object.keys(COURT_COMMANDS).forEach(function (k) { COMMANDS[k] = COURT_COMMANDS[k]; });
 
   function runCommand(line) {
     if (!terminalAdmin) {
