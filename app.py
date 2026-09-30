@@ -52,10 +52,14 @@ from astra_net import find_user, ensure_admin, sync_admins, init_net
 
 app = Flask(__name__)
 secret_key = os.environ.get("SECRET_KEY")
-if os.environ.get("VERCEL") and not secret_key:
-    raise RuntimeError("Vercel requires a stable SECRET_KEY environment variable.")
+_hosted = bool(os.environ.get("VERCEL") or os.environ.get("RENDER") or os.environ.get("ASTRA_HOSTED"))
+if _hosted and not secret_key:
+    raise RuntimeError("A hosted deployment requires a stable SECRET_KEY environment variable.")
 app.secret_key = secret_key or "dev-only-change-me"
-app.config["SESSION_COOKIE_SECURE"] = bool(os.environ.get("VERCEL")) or os.environ.get("ASTRA_HTTPS") == "1"
+app.config["SESSION_COOKIE_SECURE"] = _hosted
+if os.environ.get("ASTRA_BEHIND_PROXY"):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) or os.environ.get("ASTRA_HTTPS") == "1"
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 if os.environ.get("ASTRA_BEHIND_PROXY", "").strip() == "1":
     from werkzeug.middleware.proxy_fix import ProxyFix

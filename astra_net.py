@@ -128,7 +128,8 @@ def init_net(app, login_required, current_user):
     # ---- ping: no DB, no session - measures the network, not the app --------
     @app.route("/api/ping", methods=["GET", "OPTIONS"])
     def api_ping():
-        return _cors(jsonify(ok=True, server=SERVER_ID, t=time.time()))
+        return _cors(jsonify(ok=True, server=SERVER_ID, t=time.time(),
+                     db="sqlite" if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite") else "postgres"))
 
     @app.route("/api/servers")
     def api_servers():
