@@ -99,7 +99,7 @@ for env_name in ("DATABASE_URL", "POSTGRES_URL", "POSTGRES_URL_NON_POOLING"):
         break
 if database_url.startswith("postgres://"):
     database_url = "postgresql://" + database_url[len("postgres://"):]
-if os.environ.get("VERCEL") and (
+if _hosted and (
     not database_url or database_url.startswith("sqlite:")
 ):
     raise RuntimeError(
