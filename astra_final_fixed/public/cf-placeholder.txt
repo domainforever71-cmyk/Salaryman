@@ -1,0 +1,1 @@
+Astra is served by the Pages Function in functions/[[path]].js
