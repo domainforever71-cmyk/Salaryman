@@ -19,6 +19,6 @@ Cases are heard by the server tick; admins can overrule with `/r verdict`.
 New tables (`law_lawyers`, `law_cases`, `law_actions`, `law_regime_history`) are created automatically on first start.
 
 ## In the game UI
-`static/astra_stage27_law.js` adds a **[LAW]** tab next to CIVICS that shows `/law` inside the game window. Every 15 s it
+`static/astra_stage27_law.js` adds a **LAW** app (desktop icon + taskbar § icon) that shows `/law` inside the game window. Every 15 s it
 checks `/api/law/inbox`; a new summons or settlement offer raises a toast and a red badge on the tab.
 `app.py` injects that script tag into the index page, so `templates/index.html` does not need editing.

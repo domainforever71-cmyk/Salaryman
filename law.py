@@ -372,9 +372,9 @@ def init_law(app, login_required, admin_required, current_user, deps):
         a3 = [
             ("3.1", "Enforcement", f"Enforcement strength in this country is x{R['enforcement']}. It multiplies the chance that any crime is detected."),
             ("3.2", "Wanted rating", f"Each attempt raises your wanted rating (x2 severity if caught, x0.5 if clean). It decays by {D.wanted_decay}/min. "
-             "Every wanted point adds 5% to your chance of being caught."),
+             "Each wanted point multiplies your chance of being caught by a further 5% (detection x (1 + 0.05 x wanted)), capped at 95%."),
             ("3.3", "Repeat offenders", "After a conviction, jail terms grow by 25% of the base term for every earlier conviction, up to "
-             f"{D.jail_cap} minutes. A wanted rating of 5 or more means custody even for minor crimes."),
+             f"{D.jail_cap} minutes. A wanted rating of 5 or more means 5 minutes in custody even for crimes that normally carry none."),
             ("3.4", "Bail", f"Bail is ${D.bail_per_min:,.0f} per remaining minute, scaled by the price index."),
         ]
         for i, (cid, c) in enumerate(D.CRIMES.items(), start=1):

@@ -24,7 +24,7 @@
     if (!nav || $('nav-law')) return;
     var b = document.createElement('button');
     b.className = 'terminal-btn'; b.id = 'nav-law';
-    b.innerHTML = '[\u2696] LAW <span id="lawBadge" style="display:none;background:#ff5b6b;color:#fff;border-radius:9px;padding:0 6px;font-size:10px;margin-left:3px;"></span>';
+    b.innerHTML = '[LAW]<span id="lawBadge" style="display:none;background:#ff5b6b;color:#fff;border-radius:9px;padding:0 6px;font-size:10px;margin-left:3px;"></span>';
     b.onclick = function () { window.switchView('law'); loadFrame(); };
     var s = $('nav-settings');
     if (s) nav.insertBefore(b, s); else nav.appendChild(b);
@@ -38,7 +38,7 @@
     v.id = 'view-law'; v.className = 'app-view';
     v.innerHTML = '<div class="terminal-panel"><div class="panel-header"><div class="panel-heading-title">LAW &amp; COURTS ' +
       '<span style="color:#8a97ad;font-size:10.5px;">read the code, check your record, hire counsel, sue</span></div></div>' +
-      '<iframe id="lawFrame" title="Astra law" style="width:100%;height:calc(100vh - 210px);min-height:420px;border:0;background:#0b0f14;"></iframe></div>';
+      '<iframe id="lawFrame" title="Astra law" style="width:100%;height:100%;min-height:520px;border:0;background:#0b0f14;"></iframe></div>';
     wrap.insertBefore(v, host);
   }
 
@@ -86,6 +86,13 @@
     addView();
     addNavButton();
     if (window.winosRescanApps) window.winosRescanApps();
+    // The window system has no law glyph; use the section sign for its app and taskbar icons.
+    var tries = 0, fix = setInterval(function () {
+      document.querySelectorAll('.ws-icon[data-app="law"] .ws-icon-glyph, #wstask-law, [data-app="law"] .ws-title-icon').forEach(function (n) {
+        if (n.id === 'wstask-law') { if (n.textContent !== '\u00A7') n.textContent = '\u00A7'; } else n.textContent = '\u00A7';
+      });
+      if (++tries > 40) clearInterval(fix);
+    }, 750);
     setInterval(function () { poll(); }, 15000);
     poll();
   }
