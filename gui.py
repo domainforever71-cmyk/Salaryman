@@ -3,9 +3,19 @@ import sys
 import threading
 
 import integrity
-integrity.enforce()
 
-import webview
+_SELFTEST = '--selftest' in sys.argv      # used by Build_EXE.bat to test the freshly built exe
+if not _SELFTEST:
+    integrity.enforce()
+
+_WEBVIEW_ERR = ''
+try:
+    import webview
+except Exception as _e:
+    if not _SELFTEST:
+        raise
+    webview = None
+    _WEBVIEW_ERR = repr(_e)
 
 try:
     from astra_server import SERVER_URL as BAKED_SERVER_URL
@@ -82,7 +92,7 @@ def _pick_fastest_server(raw):
         for _ in range(3):
             try:
                 t0 = time.perf_counter()
-                urllib.request.urlopen(url + '/api/ping', timeout=3).read()
+                urllib.request.urlopen(_ping_request(url), timeout=3).read()
                 samples.append((time.perf_counter() - t0) * 1000)
             except Exception:
                 break
@@ -93,12 +103,22 @@ def _pick_fastest_server(raw):
     return best_url
 
 
-def _reachable(url):
+def _ping_request(url):
+    import urllib.request
+    # Cloudflare / Render's edge can answer 403 to the default "Python-urllib" agent.
+    return urllib.request.Request(url + '/api/ping', headers={
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstraClient/1.0',
+        'Accept': 'application/json,*/*'})
+
+
+def _reachable(url, timeout=25, detail=None):
     import urllib.request
     try:
-        urllib.request.urlopen(url + '/api/ping', timeout=6).read()
+        urllib.request.urlopen(_ping_request(url), timeout=timeout).read()
         return True
-    except Exception:
+    except Exception as e:
+        if detail is not None:
+            detail.append(repr(e))
         return False
 
 
@@ -126,7 +146,48 @@ def decide_mode():
     return 'solo', None
 
 
+def run_selftest():
+    """`astra.exe --selftest` : checks signature, webview and server, writes astra_selftest.txt, exits.
+    Exit codes: 0 = all good, 3 = signature/integrity failed, 5 = webview missing, 4 = server unreachable."""
+    lines, code = [], 0
+    ok, problems, rid = integrity.verify()
+    signed = bool(integrity._public_key_b64())
+    lines.append(f"frozen exe        : {bool(getattr(sys, 'frozen', False))}")
+    lines.append(f"signed release    : {signed}")
+    lines.append(f"integrity         : {'OK' if ok else 'FAILED'}  (release {rid})")
+    for p in problems[:15]:
+        lines.append(f"   - {p}")
+    if not ok:
+        code = 3
+    lines.append(f"webview (GUI)     : {'OK' if webview else 'FAILED ' + _WEBVIEW_ERR}")
+    if not webview and code == 0:
+        code = 5
+    try:
+        mode, url = decide_mode()
+    except Exception as e:
+        mode, url = 'error', None
+        lines.append(f"server setting    : INVALID ({e})")
+        code = code or 4
+    lines.append(f"mode              : {mode}   server: {url or '-'}")
+    if mode == 'join':
+        detail = []
+        reach = _reachable(url, timeout=60, detail=detail)
+        lines.append(f"server reachable  : {'YES' if reach else 'NO ' + ' '.join(detail)}")
+        if not reach and code == 0:
+            code = 4
+    lines.append(f"RESULT            : {'PASS' if code == 0 else 'PROBLEM (exit code %d)' % code}")
+    try:
+        with open(os.path.join(config_dir, 'astra_selftest.txt'), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+    except Exception:
+        pass
+    sys.stdout.write('\n'.join(lines) + '\n') if sys.stdout else None
+    return code
+
+
 if __name__ == '__main__':
+    if _SELFTEST:
+        sys.exit(run_selftest())
     mode, remote_url = decide_mode()
     server = None
 
