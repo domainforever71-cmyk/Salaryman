@@ -893,27 +893,34 @@ def note_regime_change(prev, new, how, detail=""):
 
 LAW_PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><title>ASTRA LAW</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0b0f14;--fg:#cfe8ff;--dim:#6f8aa6;--acc:#3ddcff;--warn:#ffd24a;--bad:#ff5b6b;--ok:#4be38a;--card:#121923;--line:#1f2b3a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,Consolas,monospace}
-header{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5;flex-wrap:wrap}
-h1{font-size:15px;margin:0 12px 0 0;color:var(--acc)}button,select,input,textarea{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);padding:6px 10px;border-radius:4px}
-button{cursor:pointer}button:hover{border-color:var(--acc)}button.on{border-color:var(--acc);color:var(--acc)}
-main{max-width:920px;margin:0 auto;padding:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px;margin:10px 0}
-.dim{color:var(--dim)}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
-details{border:1px solid var(--line);border-radius:6px;margin:8px 0;background:var(--card)}summary{cursor:pointer;padding:10px 12px;color:var(--acc)}
-.art{padding:8px 14px;border-top:1px solid var(--line)}.art b{color:var(--warn)}mark{background:#3a3300;color:var(--warn)}
-input,textarea,select{width:100%}.half{flex:1;min-width:140px}.badge{background:var(--bad);color:#fff;border-radius:9px;padding:0 7px;font-size:12px;margin-left:4px}
+:root{--bg-dark:#010306;--panel-bg:#050810;--border-color:#0f1c30;--text-main:#73a5c9;--pixel-green:#00ff66;--pixel-red:#ff3366;--pixel-cyan:#00ffcc;--pixel-yellow:#ffbb00;--role-glow:rgba(0,255,204,.16)}
+*{box-sizing:border-box}body{margin:0;padding:10px;min-height:100vh;background:radial-gradient(ellipse at 50% -20%,color-mix(in srgb,var(--pixel-cyan) 9%,transparent),transparent 58%),var(--bg-dark);color:var(--text-main);font:13px/1.5 'Share Tech Mono',monospace}
+header{display:flex;gap:12px;align-items:center;padding:10px 14px;border:1px solid var(--border-color);background:var(--panel-bg);box-shadow:0 0 25px var(--role-glow);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+.law-brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:210px}.brand-mark{width:34px;height:34px;display:grid;place-items:center;background:var(--pixel-cyan);color:var(--bg-dark);font-size:22px;font-weight:bold;box-shadow:3px 3px 0 color-mix(in srgb,var(--pixel-cyan) 55%,#000)}
+h1{font-size:14px;line-height:1.3;margin:0;color:#fff}.law-brand p{margin:3px 0 0;color:var(--pixel-cyan);font-size:10px}.role-label{display:inline-block;margin-left:8px;padding:1px 7px;border:1px solid var(--pixel-cyan);color:var(--pixel-cyan);font-size:10px;vertical-align:2px}
+.law-tabs{display:flex;gap:5px;flex-wrap:wrap}button,select,input,textarea{font:inherit;color:var(--text-main);background:#020408;border:1px solid var(--border-color);padding:7px 10px;border-radius:0}
+button{cursor:pointer;text-transform:uppercase;transition:background .15s,border-color .15s,color .15s}button:hover{border-color:var(--pixel-cyan);color:#fff}button.on{background:var(--pixel-cyan);border-color:var(--pixel-cyan);color:var(--bg-dark);font-weight:bold}
+main{max-width:1100px;margin:0 auto;padding:14px 4px}.card{background:var(--panel-bg);border:1px solid var(--border-color);padding:11px 12px;margin:9px 0}.card b{color:var(--pixel-cyan)}
+.dim{color:#8a97ad}.ok{color:var(--pixel-green)}.bad{color:var(--pixel-red)}.warn{color:var(--pixel-yellow)}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:7px 0}
+details{border:1px solid var(--border-color);margin:8px 0;background:var(--panel-bg)}summary{cursor:pointer;padding:10px 12px;color:var(--pixel-cyan);background:#020408}summary:hover{color:#fff}
+.art{padding:8px 14px;border-top:1px solid var(--border-color)}.art b{color:var(--pixel-yellow)}mark{background:color-mix(in srgb,var(--pixel-yellow) 18%,#000);color:var(--pixel-yellow)}
+input,textarea,select{width:100%}input:focus,textarea:focus,select:focus,button:focus-visible{outline:1px solid var(--pixel-cyan);outline-offset:1px;border-color:var(--pixel-cyan)}input::placeholder,textarea::placeholder{color:#607589}.half{flex:1;min-width:140px}.badge{background:var(--pixel-red);color:#fff;padding:0 7px;font-size:12px;margin-left:4px}
+h3{margin:18px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--border-color);color:var(--pixel-cyan);font-size:12px;text-transform:uppercase}
+@media(max-width:620px){body{padding:6px}header{padding:9px;gap:8px}.law-brand{width:100%}.law-tabs{width:100%}.law-tabs button{flex:1;min-width:90px;padding:7px 5px}main{padding:10px 2px}.half{min-width:100%}}
 </style></head><body>
-<header><h1>&#9878; ASTRA LAW</h1>
+<header><div class="law-brand"><span class="brand-mark">&#9878;</span><div><h1>ASTRA LAW <span id="roleLabel" class="role-label">LIFE PATH</span></h1><p>LEGAL SERVICES / PUBLIC DOCKET</p></div></div><nav class="law-tabs" aria-label="Law sections">
 <button data-t="code" class="on">LAW CODE</button><button data-t="record">MY RECORD</button><button data-t="lawyers">LAWYERS</button>
-<button data-t="court">COURT<span id="bdg" class="badge" style="display:none"></span></button></header>
+<button data-t="court">COURT<span id="bdg" class="badge" style="display:none"></span></button></nav></header>
 <main id="m"></main>
 <script>
 var tab='code',country=null,cache={};
 function $(s){return document.querySelector(s)}function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function api(m,p,b){return fetch(p,{method:m,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()}).catch(function(){return{success:false,msg:'Could not reach the server.'}})}
 function money(n){return '$'+(Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:2})}
+var roleThemes={unemployed:{label:'JOB SEEKER',accent:'#9db4d6',yellow:'#cfd8e3'},employee:{label:'EMPLOYEE',accent:'#4aa3ff',yellow:'#ffbb00'},boss:{label:'BOSS',accent:'#ffc83d',yellow:'#ffe08a'},criminal:{label:'CRIMINAL',accent:'#ff4d4d',yellow:'#ff9d5c'},kingpin:{label:'KINGPIN',accent:'#ff6a3d',yellow:'#ffc83d'}};
+function syncRoleTheme(){api('GET','/api/role').then(function(r){var p=r&&r.success&&roleThemes[r.role];if(!p)return;var root=document.documentElement;root.style.setProperty('--pixel-cyan',p.accent);root.style.setProperty('--pixel-yellow',p.yellow);root.style.setProperty('--role-glow',p.accent+'33');document.body.dataset.role=r.role;$('#roleLabel').textContent=p.label})}
 function note(r){var d=document.createElement('div');d.className='card '+(r.success?'ok':'bad');d.textContent=r.msg||(r.success?'Done.':'Failed.');$('#m').prepend(d);setTimeout(function(){d.remove()},9000)}
 Array.prototype.forEach.call(document.querySelectorAll('header button'),function(b){b.onclick=function(){tab=b.dataset.t;Array.prototype.forEach.call(document.querySelectorAll('header button'),function(x){x.classList.toggle('on',x===b)});render()}});
 function lawyerOpts(d){return d.firms.map(function(f){return '<option value="'+f.code+'">'+esc(f.name)+' (skill '+f.skill+', '+(f.fee?money(f.fee):'free')+')</option>'}).join('')+d.players.map(function(p){return '<option value="'+p.code+'">'+esc(p.name)+' - player (skill '+p.skill+', '+money(p.fee)+')</option>'}).join('')}
@@ -948,5 +955,5 @@ Array.prototype.forEach.call(document.querySelectorAll('[data-act]'),function(b)
 Array.prototype.forEach.call(document.querySelectorAll('[data-s]'),function(b){b.onclick=function(){api('POST','/api/law/case/'+b.dataset.id+'/settle',{accept:b.dataset.s==='1'}).then(function(x){note(x);rCourt()})}});
 Array.prototype.forEach.call(document.querySelectorAll('[data-w]'),function(b){b.onclick=function(){api('POST','/api/law/case/'+b.dataset.w+'/withdraw').then(function(x){note(x);rCourt()})}})})})})}
 function poll(){api('GET','/api/law/inbox').then(function(r){var b=$('#bdg');if(r&&r.total){b.textContent=r.total;b.style.display='inline'}else b.style.display='none'})}
-render();poll();setInterval(poll,20000);
+syncRoleTheme();setInterval(syncRoleTheme,30000);render();poll();setInterval(poll,20000);
 </script></body></html>"""

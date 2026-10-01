@@ -92,7 +92,8 @@
     { id: 'stockdesk', name: 'STOCK DESK', blurb: 'Five stocks, four currencies, fees, dividends and inflation.', category: 'finance', sizeMB: 96 },
     { id: 'civics', name: 'CIVICS', blurb: 'Vote the regime. Or break the law and find out.', category: 'social', sizeMB: 41 },
     { id: 'blabber', name: 'BLABBER', blurb: 'Say it out loud, or anonymously. Everyone can report you.', category: 'social', sizeMB: 27 },
-    { id: 'notespro', name: 'NOTEPAD PRO', blurb: 'Paid notes: search, tags, import/export, share codes.', category: 'utility', sizeMB: 19 }
+    { id: 'notespro', name: 'NOTEPAD PRO', blurb: 'Paid notes: search, tags, import/export, share codes.', category: 'utility', sizeMB: 19 },
+    { id: 'law', name: 'LAW & COURTS', blurb: 'Read the law, hire counsel, manage appeals and take cases to court.', category: 'utility', sizeMB: 64 }
   ].filter(function (e) { return SYSTEM_APPS.indexOf(e.id) === -1; });
 
   // Stage 19 (astra_stage19_workshift.js) adds a `requires` field: null

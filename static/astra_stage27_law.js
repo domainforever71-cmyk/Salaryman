@@ -47,6 +47,15 @@
     if (f && !f.getAttribute('src')) f.setAttribute('src', '/law');
   }
 
+  function watchViewOpen() {
+    var v = $('view-law');
+    if (!v || v.lawOpenObserver) return;
+    v.lawOpenObserver = new MutationObserver(function () {
+      if (v.classList.contains('active-view')) loadFrame();
+    });
+    v.lawOpenObserver.observe(v, { attributes: true, attributeFilter: ['class'] });
+  }
+
   function toast(text) {
     var host = $('axLiveToasts');
     if (!host) {
@@ -84,6 +93,7 @@
     if (done || !document.querySelector('.header-nav') || !$('view-dashboard')) return;
     done = true;
     addView();
+    watchViewOpen();
     addNavButton();
     if (window.winosRescanApps) window.winosRescanApps();
     // The window system has no law glyph; use the section sign for its app and taskbar icons.
