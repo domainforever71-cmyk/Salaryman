@@ -1,12 +1,23 @@
+# Secrets and private data - never uploaded to GitHub
 .env
+.env.*
+!.env.example
+*.key
+.astra_release/
+
+# Local save files
 *.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Build output / caches
+astra.exe
 __pycache__/
 *.pyc
 .venv/
 venv/
 build/
 dist/
-astra.exe
-*.key
-.astra_release/
 .wrangler/

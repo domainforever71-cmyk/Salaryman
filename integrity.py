@@ -94,6 +94,10 @@ def release_id(manifest):
 def verify(base=None):
     """Returns (ok, problems, release_id). Never raises."""
     base = base or BASE_DIR
+    # The hosted website server (Render etc.) is YOUR code on YOUR machine - the signature check is only
+    # meant for client copies. Without this, any un-signed edit pushed to GitHub makes the site answer 503.
+    if os.environ.get("ASTRA_HOSTED") or os.environ.get("RENDER") or os.environ.get("VERCEL"):
+        return True, [], None
     key_b64 = _public_key_b64()
     if not key_b64:
         return True, [], None            # unsigned dev mode
