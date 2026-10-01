@@ -122,9 +122,8 @@ def decide_mode():
     if BAKED_SERVER_URL.strip():
         return 'join', _normalise_url(BAKED_SERVER_URL)
 
-    _msgbox('This build of Astra has no game server address.\n\n'
-            'Developer: set SERVER_URL in astra_server.py, then run Build_EXE.bat again.')
-    sys.exit(1)
+    # No server address anywhere (no flag, no .env, nothing baked in): run the game locally, as before.
+    return 'solo', None
 
 
 if __name__ == '__main__':

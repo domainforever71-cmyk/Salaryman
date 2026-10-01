@@ -57,13 +57,12 @@ if _hosted and not secret_key:
     raise RuntimeError("A hosted deployment requires a stable SECRET_KEY environment variable.")
 app.secret_key = secret_key or "dev-only-change-me"
 app.config["SESSION_COOKIE_SECURE"] = _hosted
-if os.environ.get("ASTRA_BEHIND_PROXY"):
-    from werkzeug.middleware.proxy_fix import ProxyFix
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) or os.environ.get("ASTRA_HTTPS") == "1"
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 if os.environ.get("ASTRA_BEHIND_PROXY", "").strip() == "1":
+    # Behind the Cloudflare Worker/Pages proxy: trust its X-Forwarded-* headers so redirects
+    # and Google sign-in use the public address.
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 
 def _default_data_dir():
