@@ -9,21 +9,21 @@ echo Installing signing tools...
 python -m pip install --quiet cryptography
 if errorlevel 1 (
   echo ERROR: could not install the cryptography package. Check your internet connection.
-  pause
+  if not defined CI pause
   exit /b 1
 )
 
 python sign_release.py init
 if errorlevel 1 (
   echo ERROR: could not set up your signing key. See the message above.
-  pause
+  if not defined CI pause
   exit /b 1
 )
 
 python sign_release.py sign
 if errorlevel 1 (
   echo ERROR: signing failed. See the message above.
-  pause
+  if not defined CI pause
   exit /b 1
 )
 
@@ -48,4 +48,4 @@ if exist "dist\astra.exe" (
     echo ERROR: Build failed. Check terminal log above.
 )
 
-pause
+if not defined CI pause
