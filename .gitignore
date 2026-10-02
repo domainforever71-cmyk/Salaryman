@@ -21,3 +21,4 @@ venv/
 build/
 dist/
 .wrangler/
+node_modules/
