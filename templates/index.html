@@ -645,6 +645,7 @@
                     <input type="text" id="clientChatInput" placeholder="Pitch shares (e.g. You should buy TECH shares...)" style="flex-grow:1; background:#000; border:1px solid var(--border-color); color:#fff; padding:6px; font-family:var(--font-current); font-size:11.5px;">
                     <button class="terminal-btn btn-action" onclick="sendClientPitch()">PITCH</button>
                   </div>
+                  <div id="clientImageAttach"></div>
                 </div>
               </div>
             </div>
@@ -749,6 +750,7 @@
                  <div id="hiringDeskForm" style="display:flex; flex-direction:column; gap:6px;">
                    <input type="text" id="hiringRoleInput" class="d-input" placeholder="Role title (e.g. Junior Broker)">
                    <input type="number" id="hiringSalaryInput" class="d-input" placeholder="Weekly salary (max $50,000)" min="1" max="50000">
+                   <input type="number" id="hiringTargetInput" class="d-input" placeholder="Weekly earnings target" min="0.01" max="1000000" step="0.01">
                    <button class="terminal-btn btn-start" onclick="openCompanyRole()">[+] POST OPEN ROLE</button>
                  </div>
                  <button class="terminal-btn btn-warning" id="hiringCloseBtn" style="display:none; margin-top:6px;" onclick="closeCompanyRole()">CLOSE ROLE</button>
@@ -871,6 +873,7 @@
           <input type="text" id="omniConsoleInput" placeholder="Ask OMNI-CORE anything about the terminal..." style="flex-grow:1; background:#000; border:1px solid var(--border-color); color:#fff; padding:8px; font-family:var(--font-current); font-size:12px;" onkeydown="if(event.key==='Enter') sendOmniConsole()">
           <button class="terminal-btn btn-action" onclick="sendOmniConsole()">SEND</button>
         </div>
+        <div id="omniImageAttach" style="margin-top:6px;"></div>
       </div>
 
       <div class="terminal-panel">
@@ -882,6 +885,7 @@
           <input type="text" id="dialDirectiveInput" placeholder="Type a directive for the selected bot..." style="flex-grow:1; background:#000; border:1px solid var(--border-color); color:#fff; padding:8px; font-family:var(--font-current); font-size:12px;" onkeydown="if(event.key==='Enter') dialSelectedBot()">
           <button class="terminal-btn btn-start" onclick="dialSelectedBot()">[DIAL]</button>
         </div>
+        <div id="botImageAttach" style="margin-top:6px;"></div>
       </div>
 
       <div class="bots-grid" id="botsGridContainer">
@@ -2350,7 +2354,7 @@
       const form = document.getElementById('hiringDeskForm');
       const closeBtn = document.getElementById('hiringCloseBtn');
       if (data.hiring_open) {
-        status.innerHTML = `Open role: <strong style="color:var(--pixel-green);">${data.hiring_role}</strong> &mdash; $${(data.hiring_salary||0).toLocaleString()}/wk. Live on every other player's CAREER board right now.`;
+        status.innerHTML = `Open role: <strong style="color:var(--pixel-green);">${data.hiring_role}</strong> &mdash; $${(data.hiring_salary||0).toLocaleString()}/wk, target $${(data.hiring_target||0).toLocaleString()}/wk. Above-target commission is bonus pay. Live on every other player's CAREER board right now.`;
         form.style.display = 'none';
         closeBtn.style.display = 'inline-block';
       } else {
@@ -2363,7 +2367,7 @@
         ? data.staff.map(s => `
           <div class="d-list-item">
             <span>${s.username} &mdash; ${s.role}</span>
-            <span style="color:var(--pixel-green);">$${(s.salary||0).toLocaleString()}/wk since day ${s.since_day}</span>
+            <span style="color:var(--pixel-green);">$${(s.salary||0).toLocaleString()}/wk &middot; target $${(s.target||0).toLocaleString()}/wk since day ${s.since_day}</span>
           </div>`).join('')
         : 'No staff hired yet.';
     } catch (e) { /* offline - leave last-known state on screen */ }
@@ -2372,16 +2376,18 @@
   async function openCompanyRole() {
     const role = document.getElementById('hiringRoleInput').value.trim();
     const salary = parseFloat(document.getElementById('hiringSalaryInput').value);
-    if (!role || !salary) { alert('Enter a role title and a salary.'); return; }
+    const target = parseFloat(document.getElementById('hiringTargetInput').value);
+    if (!role || !salary || !target) { alert('Enter a role title, weekly salary, and weekly earnings target.'); return; }
     try {
       const res = await fetch('/api/game/company/set_listing', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ open: true, role, salary })
+        body: JSON.stringify({ open: true, role, salary, target })
       });
       const data = await res.json();
       if (!data.success) { alert(data.msg || 'Could not post role.'); return; }
       document.getElementById('hiringRoleInput').value = '';
       document.getElementById('hiringSalaryInput').value = '';
+      document.getElementById('hiringTargetInput').value = '';
       refreshHiringDesk();
     } catch (e) { alert('Connection failed.'); }
   }
@@ -2552,6 +2558,7 @@
 
 
 <script src="{{ url_for('static', filename='astra_sfx.js') }}"></script>
+<script src="{{ url_for('static', filename='astra_images.js') }}"></script>
 <script src="{{ url_for('static', filename='astra_extras.js') }}"></script>
 
 <script src="{{ url_for('static', filename='astra_phase5.js') }}"></script>

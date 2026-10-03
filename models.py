@@ -151,6 +151,7 @@ class GameSave(db.Model):
     active = db.Column(db.Boolean, default=False)
     name = db.Column(db.String(64), default="Operator")
     age = db.Column(db.Integer, default=20)
+    world_tick = db.Column(db.Integer, default=0)
     health = db.Column(db.Integer, default=80)
     balance = db.Column(db.Float, default=2000.0)
     salary = db.Column(db.Float, default=2500.0)
@@ -206,6 +207,7 @@ class GameSave(db.Model):
     employer_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     hiring_role = db.Column(db.String(64), nullable=True)
     hiring_salary = db.Column(db.Float, default=0.0)
+    hiring_target = db.Column(db.Float, default=0.0)
     hiring_open = db.Column(db.Boolean, default=False)
 
     boss_mood = db.Column(db.Integer, default=100)
@@ -447,6 +449,7 @@ class GameSave(db.Model):
             "audit_strikes": self.audit_strikes, "audit_status": self.audit_status,
             "employer_user_id": self.employer_user_id,
             "hiring_role": self.hiring_role, "hiring_salary": self.hiring_salary,
+            "hiring_target": self.hiring_target,
             "hiring_open": self.hiring_open,
         }
 
@@ -890,7 +893,7 @@ class PlayerHire(db.Model):
     employer_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     employee_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     role = db.Column(db.String(64), default="Contract Operator")
-    salary = db.Column(db.Float, default=0.0)  # per in-game day, paid employer -> employee
+    salary = db.Column(db.Float, default=0.0)  # per week, paid employer -> employee in daily installments
     status = db.Column(db.String(16), default="pending")  # pending/active/declined/ended
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     responded_at = db.Column(db.DateTime)
@@ -921,6 +924,26 @@ class CoopBan(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class ImageAsset(db.Model):
+    """A private, account-owned picture that can be reused in game messages."""
+    __tablename__ = "image_assets"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    filename = db.Column(db.String(128), nullable=False)
+    mime = db.Column(db.String(32), nullable=False)
+    size_bytes = db.Column(db.Integer, nullable=False)
+    payload = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "filename": self.filename, "mime": self.mime,
+            "size_bytes": self.size_bytes,
+            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else None,
+        }
+
+
 def ensure_schema(engine):
     """create_all() only creates missing *tables* - it will never add a
     column to a table that already exists. That means anyone upgrading from
@@ -937,7 +960,7 @@ def ensure_schema(engine):
     for model in (User, GameSave, LinkedDevice, VaultEntry, MusicTrack, CoopRoom,
                   CoopMembership, CoopLogEntry, Friendship, DirectMessage,
                   DMAttachment, TradeOffer, CreditLedger, CoopBan, PriceAlert,
-                  PlayerHire, Report):
+                  PlayerHire, Report, ImageAsset):
         table = model.__table__
         if table.name not in existing_tables:
             continue  

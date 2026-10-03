@@ -174,7 +174,7 @@ class Career:
                              self.employees * self.rng.uniform(60, 140), 2)
             self.balance += revenue
         else:
-            self.balance += self.salary / 30
+            self.balance += self.salary / 7
 
         for t in self.tracks:
             payout = daily_royalty(t.base_daily, t.age_days)
@@ -185,9 +185,11 @@ class Career:
         self.day += 1
         self.credits += CREDIT_RULES["day"]
 
-        if self.day % 7 == 0:
+        if (self.day - 1) % 7 == 0:
             self.week += 1
             hit_target = self.weekly_commission >= self.weekly_target
+            if self.job_status == "employed":
+                self.balance += max(0.0, self.weekly_commission - self.weekly_target)
             self.credits += CREDIT_RULES["week"]
             if hit_target and self.weekly_target > 0:
                 self.credits += CREDIT_RULES["target_hit"]
@@ -205,13 +207,13 @@ class Career:
             self.weekly_commission = 0.0
             self.health = max(0, self.health - 1)
 
-        if self.day % 30 == 0:
+        if (self.day - 1) % 30 == 0:
             self.month += 1
-            self.age = 20 + self.month // 12
+            self.age = 20 + (self.month - 1) // 12
             if self.balance > 0:
                 self.balance -= round(self.balance * 0.04, 2)
             if self.job_status == "employed" and self.company_name == "Entry Level Desk":
-                rung = min(JOB_LADDER_RAISES - 1, self.month // 12)
+                rung = min(JOB_LADDER_RAISES - 1, (self.month - 1) // 12)
                 if rung > 0:
                     self.salary = round(self.salary * 1.15 ** min(rung, 1), 2)
 

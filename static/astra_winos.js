@@ -238,27 +238,67 @@
     return null;
   }
 
-  var ICON_ROW_H = 92;   // vertical spacing per icon
-  var ICON_COL_W = 88;   // horizontal spacing per column
-  var ICON_TOP = 16;     // top inset before the first row
+  var ICON_ROW_H = 90;
+  var ICON_COL_W = 92;
+  var ICON_TOP = 12;
+  var ICON_LEFT = 8;
+
+  function iconGrid(host) {
+    var rows = Math.max(1, Math.floor(((host.clientHeight || window.innerHeight) - ICON_TOP - 8) / ICON_ROW_H));
+    var cols = Math.max(1, Math.floor(((host.clientWidth || window.innerWidth) - ICON_LEFT) / ICON_COL_W));
+    return { rows: rows, cols: cols };
+  }
+
+  function iconPosition(slot, grid) {
+    var row = slot % grid.rows;
+    var col = Math.floor(slot / grid.rows) % grid.cols;
+    return { x: ICON_LEFT + col * ICON_COL_W, y: ICON_TOP + row * ICON_ROW_H };
+  }
+
+  function nearestIconSlot(pos, grid) {
+    var col = Math.round((pos.x - ICON_LEFT) / ICON_COL_W);
+    var row = Math.round((pos.y - ICON_TOP) / ICON_ROW_H);
+    col = Math.max(0, Math.min(grid.cols - 1, col));
+    row = Math.max(0, Math.min(grid.rows - 1, row));
+    return col * grid.rows + row;
+  }
+
+  function availableIconSlot(preferred, occupied, grid) {
+    var total = grid.rows * grid.cols;
+    for (var offset = 0; offset < total; offset++) {
+      var slot = (preferred + offset) % total;
+      if (!occupied[slot]) return slot;
+    }
+    return preferred;
+  }
 
   function defaultIconPos(host, i) {
     // Wrap into columns based on the desktop's real available height, so
     // icons never run off the bottom of the screen and force a scrollbar -
     // a real OS desktop lays icons out top-to-bottom THEN left-to-right,
     // never in one single endless column.
-    var availH = Math.max(ICON_ROW_H, (host.clientHeight || window.innerHeight) - ICON_TOP);
-    var perCol = Math.max(1, Math.floor(availH / ICON_ROW_H));
-    var col = Math.floor(i / perCol);
-    var row = i % perCol;
-    return { x: 14 + col * ICON_COL_W, y: ICON_TOP + row * ICON_ROW_H };
+    return iconPosition(i, iconGrid(host));
   }
 
   function buildIcons() {
     var host = $('winosIcons');
     var apps = discoverApps();
+    if (!host) return;
+    var grid = iconGrid(host);
+    var occupied = Object.create(null);
+    var positions = apps.map(function (id, i) {
+      var saved = savedIconPos(id);
+      var preferred = saved ? nearestIconSlot(saved, grid) : i;
+      var slot = availableIconSlot(preferred, occupied, grid);
+      occupied[slot] = id;
+      var pos = iconPosition(slot, grid);
+      if (!saved || saved.x !== pos.x || saved.y !== pos.y) {
+        try { localStorage.setItem(iconPosKey(id), JSON.stringify(pos)); } catch (e) { /* ignore */ }
+      }
+      return pos;
+    });
     host.innerHTML = apps.map(function (id, i) {
-      var pos = savedIconPos(id) || defaultIconPos(host, i);
+      var pos = positions[i] || defaultIconPos(host, i);
       return '<button class="ws-icon" type="button" data-app="' + id + '" ' +
         'style="left:' + pos.x + 'px; top:' + pos.y + 'px;">' +
         '<span class="ws-icon-glyph">' + iconFor(id) + '</span>' +
@@ -295,10 +335,21 @@
       moved = true;
       btn.classList.add('ws-dragging');
       var hostRect = host.getBoundingClientRect();
-      var nx = Math.max(0, Math.min(hostRect.width - btn.offsetWidth, ox + dx));
-      var ny = Math.max(0, Math.min(hostRect.height - btn.offsetHeight, oy + dy));
-      btn.style.left = nx + 'px';
-      btn.style.top = ny + 'px';
+      var grid = iconGrid(host);
+      var slot = nearestIconSlot({ x: ox + dx, y: oy + dy }, grid);
+      var pos = iconPosition(slot, grid);
+      var other = Array.prototype.find.call(host.querySelectorAll('.ws-icon'), function (icon) {
+        return icon !== btn && icon.offsetLeft === pos.x && icon.offsetTop === pos.y;
+      });
+      if (other) {
+        other.style.left = ox + 'px';
+        other.style.top = oy + 'px';
+        try {
+          localStorage.setItem(iconPosKey(other.getAttribute('data-app')), JSON.stringify({ x: ox, y: oy }));
+        } catch (ignore) { /* ignore */ }
+      }
+      btn.style.left = pos.x + 'px';
+      btn.style.top = pos.y + 'px';
     }
     function up() {
       dragging = false;
@@ -782,6 +833,11 @@
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
     buildDesktop();
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(buildIcons, 100);
+    });
     refreshGameLabel();
 
     // Wrap whatever window.switchView currently is (phase8 already wraps the

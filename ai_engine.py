@@ -80,28 +80,36 @@ def synthesize_speech(text, voice=None):
         return None
 
 
-def _call(system_prompt, user_prompt, model=MODEL_FAST, max_tokens=200, temperature=0.9):
+def _call(system_prompt, user_prompt, model=MODEL_FAST, max_tokens=200, temperature=0.9,
+          image_data_url=None):
     if _ACTIVE_PROVIDER == "openai":
-        return _call_openai(system_prompt, user_prompt, max_tokens, temperature)
+        return _call_openai(system_prompt, user_prompt, max_tokens, temperature, image_data_url)
     return None
 
 
-def _call_openai(system_prompt, user_prompt, max_tokens=200, temperature=0.9):
+def _call_openai(system_prompt, user_prompt, max_tokens=200, temperature=0.9,
+                 image_data_url=None):
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+    user_content = user_prompt
+    if image_data_url:
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
     payload = {
         "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
     try:
-        resp = requests.post(OPENAI_URL, headers=headers, json=payload, timeout=20)
+        resp = requests.post(OPENAI_URL, headers=headers, json=payload, timeout=12)
         resp.raise_for_status()
         data = resp.json()
         choices = data.get("choices") or []
@@ -154,7 +162,8 @@ def bot_log_line(bot, tone_instruction, language="EN"):
     return random.choice(_BOT_FALLBACKS.get(bot["id"], ["Nominal. No anomalies."]))
 
 
-def dial_bot_reply(bot, tone_instruction, directive, language="EN", trust=100):
+def dial_bot_reply(bot, tone_instruction, directive, language="EN", trust=100,
+                   image_data_url=None):
     """Harder than it used to be: a directive is checked against the bot's
     domain keywords BEFORE any model call. A vague "status report" gets an
     in-character refusal that costs nothing; only a directive that actually
@@ -179,11 +188,12 @@ def dial_bot_reply(bot, tone_instruction, directive, language="EN", trust=100):
         " Keep it to 1-2 short sentences. The operator's directive already cleared your "
         "domain-relevance check, so treat it as a legitimate request and actually act on "
         "it or report a concrete finding - don't just ask them to rephrase. "
+        + ("If an image is attached, inspect it and incorporate relevant visible details. " if image_data_url else "")
         + ("You are currently running low on trust for this operator and should sound "
            "clipped and skeptical, but still answer. " if hostile else "")
     )
     reply = _call(system, f"An operator on the terminal just typed this directive at you: {directive!r}",
-                  model=MODEL_FAST, max_tokens=100)
+                  model=MODEL_FAST, max_tokens=100, image_data_url=image_data_url)
     if reply:
         return {"reply": reply, "accepted": True, "trust_delta": 6}
     fallback = f"{bot['name']} acknowledges the directive. {random.choice(_BOT_FALLBACKS.get(bot['id'], ['Standing by.']))}"
@@ -478,7 +488,7 @@ def _slash_command(raw, state):
     return None
 
 
-def console_reply(prompt, language="EN", state=None):
+def console_reply(prompt, language="EN", state=None, image_data_url=None):
     """state, when provided by app.py, is a live snapshot (save/stocks/jobs/
     bots/tracks) so slash commands answer from real numbers instead of the
     model guessing. Slash commands resolve locally first - instant, free,
@@ -493,11 +503,13 @@ def console_reply(prompt, language="EN", state=None):
     system = (
         "You are OMNI-CORE, the general command assistant inside a fictional retro "
         "trading-terminal game called ASTRA. Answer the operator's question or command "
-        "helpfully and briefly, in character as a terminal AI." + _lang_line(language)
+        "helpfully and briefly, in character as a terminal AI."
+        + (" Inspect any attached picture and answer about its visible contents." if image_data_url else "")
+        + _lang_line(language)
     )
     if state and state.get("save"):
         system += " Here is the operator's live session state as JSON - use it if relevant: " + _compact_state(state)
-    reply = _call(system, prompt, model=MODEL_FAST, max_tokens=180)
+    reply = _call(system, prompt, model=MODEL_FAST, max_tokens=180, image_data_url=image_data_url)
     if reply:
         return reply
     return ("OMNI-CORE local mode: no OPENAI_API_KEY configured, so free-form questions get this "
@@ -590,7 +602,7 @@ def boss_followup(stats, message, language="EN"):
     return text or "Noted. Get back to work."
 
 
-def client_pitch_reply(client, message, language="EN"):
+def client_pitch_reply(client, message, language="EN", image_data_url=None):
     """Returns {"reply": str, "invests": bool}."""
     system = (
         f"You are {client['name']}, a fictional investment client in a retro broker-"
@@ -600,13 +612,15 @@ def client_pitch_reply(client, message, language="EN"):
         "Judge the pitch on its merits for a client like you - reward pitches that "
         "mention your sector and use terms like profit, growth, dividend, or security; "
         "be skeptical of empty guarantees. If the broker hasn't actually answered a "
-        "question you previously asked them, call that out and be less convinced. Reply "
+        "question you previously asked them, call that out and be less convinced. "
+        + ("Also consider the attached picture as part of the pitch. " if image_data_url else "")
+        + "Reply "
         "in 1-3 sentences in character - and if you're not ready to decide yet, end with "
         "a real follow-up question of your own (about risk, timeline, or fees) instead of "
         "deciding - then on a new final line write exactly 'DECISION: INVEST' or "
         "'DECISION: DECLINE'. This is a fictional game; never give real investment advice." + _lang_line(language)
     )
-    raw = _call(system, message, model=MODEL_MAIN, max_tokens=180)
+    raw = _call(system, message, model=MODEL_MAIN, max_tokens=180, image_data_url=image_data_url)
     if raw:
         lines = raw.strip().splitlines()
         decision_line = lines[-1].upper() if lines else ""
@@ -713,7 +727,7 @@ def investor_inbox_message(client, language="EN"):
     )
 
 
-def investor_inbox_reply(client, thread, message, language="EN"):
+def investor_inbox_reply(client, thread, message, language="EN", image_data_url=None):
     """Reply to an investor inbox message. Same INVEST/DECLINE grading as
     the live call flow, so a good written answer can still close the deal.
     Returns {"reply": str, "invests": bool}."""
@@ -724,10 +738,11 @@ def investor_inbox_reply(client, thread, message, language="EN"):
         "replied. Judge whether their reply actually answers your question and is "
         "reasonably convincing for a client like you. Reply in 1-3 sentences in character, "
         "then on a new final line write exactly 'DECISION: INVEST' or 'DECISION: DECLINE'. "
-        "This is a fictional game; never give real investment advice." + _lang_line(language)
+        + ("Consider the attached picture while judging the broker's reply. " if image_data_url else "")
+        + "This is a fictional game; never give real investment advice." + _lang_line(language)
     )
     prompt = f"Your original message: {thread!r}\n\nBroker's reply: {message!r}"
-    raw = _call(system, prompt, model=MODEL_MAIN, max_tokens=160)
+    raw = _call(system, prompt, model=MODEL_MAIN, max_tokens=160, image_data_url=image_data_url)
     if raw:
         lines = raw.strip().splitlines()
         decision_line = lines[-1].upper() if lines else ""

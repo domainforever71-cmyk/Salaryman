@@ -3,6 +3,7 @@ integrity.enforce()
 
 import base64
 import json
+import math
 import os
 import random
 import re
@@ -17,7 +18,7 @@ from urllib.parse import urlencode
 
 import requests
 from sqlalchemy.exc import IntegrityError
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for
+from flask import Flask, Response, render_template, jsonify, request, session, redirect, url_for
 
 try:
     from dotenv import load_dotenv
@@ -45,7 +46,7 @@ from models import (
     db, User, GameSave, CoopRoom, CoopMembership, CoopLogEntry,
     LinkedDevice, VaultEntry, MusicTrack, Friendship, DirectMessage,
     DMAttachment, TradeOffer, CreditLedger, CoopBan, PriceAlert, PlayerHire,
-    Report, ensure_schema,
+    Report, ImageAsset, ensure_schema,
 )
 
 from astra_net import find_user, ensure_admin, sync_admins, init_net
@@ -523,16 +524,29 @@ def _catch_up_day(user, save):
     if not save.active:
         return
     target = _target_day_number()
-    if save.day >= target:
+    last_tick = save.world_tick or target
+    if last_tick >= target:
+        if save.world_tick != target:
+            save.world_tick = target
+            db.session.commit()
         return
-    ticks = min(target - save.day, MAX_LIVE_CATCHUP_TICKS)
+    elapsed_ticks = target - last_tick
+    ticks = min(elapsed_ticks, MAX_LIVE_CATCHUP_TICKS)
     _catchup_events = []
     for _ in range(ticks):
         if not save.active:
             break
         _run_day_tick(user, save, _catchup_events)
-    if save.active and save.day < target:
-        save.day = target
+    skipped_ticks = elapsed_ticks - ticks
+    if save.active and skipped_ticks:
+        previous_day = save.day
+        save.day += skipped_ticks
+        save.week += (save.day - 1) // 7 - (previous_day - 1) // 7
+        save.month += (save.day - 1) // 30 - (previous_day - 1) // 30
+        save.age = 20 + (save.month - 1) // 12
+        if save.age >= 80:
+            save.active = False
+    save.world_tick = target
     db.session.commit()
 
 
@@ -785,6 +799,104 @@ def api_desktop_state():
     user.set_desktop_state(state)
     db.session.commit()
     return jsonify(success=True, state=state)
+
+
+MAX_SAVED_IMAGE_BYTES = 256 * 1024
+MAX_SAVED_IMAGES = 50
+MAX_SAVED_IMAGE_TOTAL_BYTES = 5 * 1024 * 1024
+SAVED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
+def _valid_image_bytes(mime, raw):
+    if mime == "image/jpeg":
+        return raw.startswith(b"\xff\xd8\xff")
+    if mime == "image/png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/gif":
+        return raw.startswith((b"GIF87a", b"GIF89a"))
+    if mime == "image/webp":
+        return len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    return False
+
+
+def _owned_image(user_id, image_id):
+    if image_id in (None, ""):
+        return None
+    try:
+        image_id = int(image_id)
+    except (TypeError, ValueError):
+        return None
+    if image_id <= 0:
+        return None
+    return ImageAsset.query.filter_by(id=image_id, user_id=user_id).first()
+
+
+def _image_data_url(image):
+    if not image:
+        return None
+    return f"data:{image.mime};base64,{base64.b64encode(image.payload).decode('ascii')}"
+
+
+@app.route("/api/images", methods=["GET", "POST"])
+@login_required
+def saved_images():
+    user = current_user()
+    if request.method == "GET":
+        images = ImageAsset.query.filter_by(user_id=user.id).order_by(ImageAsset.created_at.desc()).limit(
+            MAX_SAVED_IMAGES
+        ).all()
+        return jsonify(success=True, images=[image.to_dict() for image in images])
+
+    data = request.get_json(silent=True) or {}
+    mime = str(data.get("mime") or "").lower().strip()
+    if mime not in SAVED_IMAGE_TYPES:
+        return jsonify(success=False, msg="Use a JPEG, PNG, GIF, or WebP image."), 400
+    try:
+        raw = base64.b64decode(data.get("data") or "", validate=True)
+    except (ValueError, TypeError):
+        return jsonify(success=False, msg="Image data was not valid base64."), 400
+    if not raw:
+        return jsonify(success=False, msg="The selected picture is empty."), 400
+    if len(raw) > MAX_SAVED_IMAGE_BYTES:
+        return jsonify(success=False, msg="Pictures must be 256 KB or smaller."), 413
+    if not _valid_image_bytes(mime, raw):
+        return jsonify(success=False, msg="Image content does not match its file type."), 400
+
+    existing = ImageAsset.query.filter_by(user_id=user.id).all()
+    if len(existing) >= MAX_SAVED_IMAGES:
+        return jsonify(success=False, msg=f"Picture library is full (maximum {MAX_SAVED_IMAGES})."), 400
+    if sum(image.size_bytes for image in existing) + len(raw) > MAX_SAVED_IMAGE_TOTAL_BYTES:
+        return jsonify(success=False, msg="Picture library storage limit is 5 MB."), 400
+
+    filename = re.sub(r"[^\w.\- ]", "_", str(data.get("filename") or "picture"))[:128]
+    image = ImageAsset(user_id=user.id, filename=filename, mime=mime,
+                       size_bytes=len(raw), payload=raw)
+    db.session.add(image)
+    db.session.commit()
+    return jsonify(success=True, image=image.to_dict()), 201
+
+
+@app.route("/api/images/<int:image_id>", methods=["DELETE"])
+@login_required
+def saved_image_delete(image_id):
+    image = _owned_image(current_user().id, image_id)
+    if not image:
+        return jsonify(success=False, msg="Picture not found."), 404
+    db.session.delete(image)
+    db.session.commit()
+    return jsonify(success=True)
+
+
+@app.route("/api/images/<int:image_id>/content")
+@login_required
+def saved_image_content(image_id):
+    image = _owned_image(current_user().id, image_id)
+    if not image:
+        return jsonify(success=False, msg="Picture not found."), 404
+    return Response(image.payload, mimetype=image.mime, headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.route("/api/game/politics")
@@ -1568,10 +1680,14 @@ def dial_bot():
         return jsonify(success=False, msg="Unknown bot code."), 404
 
     user = current_user()
+    image = _owned_image(user.id, data.get("image_id"))
+    if data.get("image_id") not in (None, "") and not image:
+        return jsonify(success=False, msg="Picture not found in your library."), 404
     tone = PERSONA_TONES.get(user.bot_persona, PERSONA_TONES["ruthless"])
     trust_map = session.get("bot_trust") or {}
     trust = trust_map.get(bot["id"], 100)
-    result = ai.dial_bot_reply(bot, tone, query or "Status report.", user.language, trust=trust)
+    result = ai.dial_bot_reply(bot, tone, query or "Status report.", user.language,
+                               trust=trust, image_data_url=_image_data_url(image))
     trust_map[bot["id"]] = max(0, min(100, trust + result["trust_delta"]))
     session["bot_trust"] = trust_map
     output = result["reply"]
@@ -1579,7 +1695,8 @@ def dial_bot():
         market_state["bot_logs"][bot["id"]].insert(0, output)
         del market_state["bot_logs"][bot["id"]][10:]
     return jsonify(success=True, bot=bot["name"], role=bot["role"], output=output,
-                    accepted=result["accepted"], trust=trust_map[bot["id"]])
+                    accepted=result["accepted"], trust=trust_map[bot["id"]],
+                    image=image.to_dict() if image else None)
 
 
 @app.route("/api/bot_broadcast")
@@ -1614,8 +1731,13 @@ def ai_command():
     mode = data.get("mode", "assistant")
     prompt = (data.get("prompt") or "").strip()
     user = current_user()
-    if not prompt:
+    image = _owned_image(user.id, data.get("image_id"))
+    if data.get("image_id") not in (None, "") and not image:
+        return jsonify(success=False, msg="Picture not found in your library."), 404
+    if not prompt and not image:
         return jsonify(response="Enter a directive first.")
+    if not prompt:
+        prompt = "Describe this picture."
 
     if mode == "assistant" and _REMEMBER_PATTERN.match(prompt):
 
@@ -1643,8 +1765,9 @@ def ai_command():
     if lowered.startswith("/alert ") and not lowered.startswith("/alerts"):
         return jsonify(response=_create_alert_from_command(user, prompt.strip()[len("/alert "):]))
 
-    text = ai.console_reply(prompt, user.language, state=_omni_state_snapshot(user))
-    return jsonify(response=text)
+    text = ai.console_reply(prompt, user.language, state=_omni_state_snapshot(user),
+                            image_data_url=_image_data_url(image))
+    return jsonify(response=text, image=image.to_dict() if image else None)
 
 
 _TRACE_WARNING = (
@@ -1806,6 +1929,7 @@ def game_start():
     save.difficulty = data.get("difficulty", "Normal")
     save.active = True
     save.age = 20
+    save.world_tick = _target_day_number()
     save.balance = 2000.0
     save.salary = 0.0
     save.job_title = "Unemployed"
@@ -1818,10 +1942,15 @@ def game_start():
     save.set_shares({})
     save.set_employees([])
     save.job_status = "unemployed"
+    save.employer_user_id = None
     save.applied_firm = None
     save.interview_turns = 0
     save.interview_transcript = ""
     save.job_start_day = 1
+    save.hiring_open = False
+    save.hiring_role = None
+    save.hiring_salary = 0.0
+    save.hiring_target = 0.0
     save.business_started_day = None
     save.business_capital = 0.0
     save.boss_mood = 100
@@ -2009,7 +2138,7 @@ def _process_player_company_payroll(user, save, events):
         return
     staff = GameSave.query.filter_by(employer_user_id=user.id, job_status="employed_player").all()
     for emp_save in staff:
-        pay = round((emp_save.salary or 0) / 30, 2)
+        pay = round((emp_save.salary or 0) / 7, 2)
         if pay <= 0:
             continue
         if save.balance < pay:
@@ -2018,6 +2147,25 @@ def _process_player_company_payroll(user, save, events):
         save.balance -= pay
         emp_save.balance += pay
         emp_save.add_profit(pay)
+
+
+def _process_player_company_bonus(save, events):
+    if save.job_status != "employed_player" or not save.employer_user_id:
+        return
+    bonus = round(max(0.0, (save.weekly_commission or 0.0) - (save.weekly_target or 0.0)), 2)
+    if bonus <= 0:
+        return
+    employer = GameSave.query.filter_by(user_id=save.employer_user_id).first()
+    if not employer or employer.job_status != "business_owner":
+        return
+    if employer.balance < bonus:
+        events.append(f"Your employer could not fund the ${bonus:.2f} above-target bonus.")
+        return
+    employer.balance -= bonus
+    employer.add_profit(-bonus)
+    save.balance += bonus
+    save.add_profit(bonus)
+    events.append(f"Above-target bonus paid: +${bonus:.2f}.")
 
 
 def _maybe_sick_day(save, events):
@@ -2070,8 +2218,9 @@ def _run_day_tick(user, save, events):
         save.balance += revenue
         save.add_profit(revenue)
     elif save.job_status != "employed_player":
-        save.balance += save.salary / 30
-        save.add_profit(save.salary / 30)
+        daily_salary = (save.salary or 0.0) / 7
+        save.balance += daily_salary
+        save.add_profit(daily_salary)
 
     if benefits["passive_income"]:
         save.balance += benefits["passive_income"]
@@ -2125,9 +2274,17 @@ def _run_day_tick(user, save, events):
     save.day += 1
     award_credits(user, "day", commit=False)
 
-    if save.day % 7 == 0:
+    if (save.day - 1) % 7 == 0:
         save.week += 1
         hit_target = save.weekly_commission >= save.weekly_target
+        if save.job_status == "employed":
+            bonus = round(max(0.0, save.weekly_commission - save.weekly_target), 2)
+            if bonus:
+                save.balance += bonus
+                save.add_profit(bonus)
+                events.append(f"Above-target bonus paid: +${bonus:.2f}.")
+        else:
+            _process_player_company_bonus(save, events)
         award_credits(user, "week", commit=False)
         if hit_target and save.weekly_target > 0:
             award_credits(user, "target_hit", commit=False)
@@ -2155,16 +2312,16 @@ def _run_day_tick(user, save, events):
                 save.audit_status = "clean"
             events.append("Your compliance probation period has ended - salary restored.")
 
-    if save.day % 30 == 0:
+    if (save.day - 1) % 30 == 0:
         save.month += 1
-        save.age = 20 + (save.month // 12)
+        save.age = 20 + ((save.month - 1) // 12)
         if save.balance > 0:
             tax_rate = market_state.get("tax_rate", TAX_RATE_DEFAULT)
             tax = round(save.balance * tax_rate, 2)
             save.balance -= tax
             events.append(f"Monthly taxes withheld: -${tax:.2f} ({tax_rate * 100:.1f}%, set by current tax law).")
         if save.job_status == "employed" and save.company_name == "Entry Level Desk":
-            rung = min(len(JOB_LADDER) - 1, save.month // 12)
+            rung = min(len(JOB_LADDER) - 1, (save.month - 1) // 12)
             if JOB_LADDER[rung] != save.job_title:
                 save.job_title = JOB_LADDER[rung]
                 save.salary = round(save.salary * 1.15, 2)
@@ -2191,6 +2348,7 @@ def game_advance_day():
 
     events = []
     _run_day_tick(user, save, events)
+    save.world_tick = _target_day_number()
 
     db.session.commit()
     return jsonify(success=True, events=events, boss_mood=save.boss_mood)
@@ -2359,15 +2517,21 @@ def game_call_client():
 def game_convince_client():
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
+    user = current_user()
+    image = _owned_image(user.id, data.get("image_id"))
+    if data.get("image_id") not in (None, "") and not image:
+        return jsonify(success=False, msg="Picture not found in your library."), 404
+    if not message and not image:
+        return jsonify(success=False, msg="Write a pitch or attach a picture."), 400
     client_id = session.get("active_call_client_id")
     client = next((b for b in CLIENT_BOTS if b["id"] == client_id), None)
     if not client:
         return jsonify(success=False, reply="No active call.")
 
-    user = current_user()
     save = get_or_create_save(user)
     save.mark_active()
-    result = ai.client_pitch_reply(client, message, user.language)
+    result = ai.client_pitch_reply(client, message, user.language,
+                                   image_data_url=_image_data_url(image))
 
     trust_map = save.client_trust()
     trust = trust_map.get(client_id, CLIENT_TRUST_RULES["start"])
@@ -2397,7 +2561,8 @@ def game_convince_client():
     save.set_client_trust(trust_map)
 
     db.session.commit()
-    return jsonify(success=True, deal_closed=result["invests"], reply=result["reply"], trust=trust)
+    return jsonify(success=True, deal_closed=result["invests"], reply=result["reply"], trust=trust,
+                    image=image.to_dict() if image else None)
 
 
 @app.route("/api/game/boss_review", methods=["GET", "POST"])
@@ -2436,7 +2601,7 @@ def _resolve_firm(firm_id):
         firm = {
             "id": firm_id, "name": gs.company_name or "an operator-run company",
             "role": gs.hiring_role or "Operator", "salary": gs.hiring_salary or 0.0,
-            "target": 0.0,
+            "target": gs.hiring_target or 0.0,
             "interviewer": f"{owner.username if owner else 'the founder'}, "
                            f"the founder of {gs.company_name or 'the company'}",
         }
@@ -2713,7 +2878,7 @@ def game_jobs():
         headcount = GameSave.query.filter_by(employer_user_id=gs.user_id, job_status="employed_player").count()
         listings.append({
             "id": f"player:{gs.id}", "name": gs.company_name or "Unnamed Company",
-            "salary": gs.hiring_salary or 0.0, "target": 0.0,
+            "salary": gs.hiring_salary or 0.0, "target": gs.hiring_target or 0.0,
             "blurb": f"Player-founded company. Role: {gs.hiring_role or 'Operator'}. "
                      f"{headcount} operator(s) currently on staff.",
             "founder": owner.username if owner else "?", "player_company": True,
@@ -2840,15 +3005,22 @@ def game_company_set_listing():
         return jsonify(success=False, msg="Invalid salary."), 400
     if not role:
         return jsonify(success=False, msg="Give the role a title.")
-    if salary <= 0 or salary > 50000:
-        return jsonify(success=False, msg="Monthly salary must be between $0 and $50,000.")
-
+    if not math.isfinite(salary) or salary <= 0 or salary > 50000:
+        return jsonify(success=False, msg="Weekly salary must be between $0 and $50,000."), 400
+    try:
+        target = round(float(data.get("target", 0)), 2)
+    except (TypeError, ValueError):
+        return jsonify(success=False, msg="Invalid weekly target."), 400
+    if not math.isfinite(target) or target <= 0 or target > 1000000:
+        return jsonify(success=False, msg="Weekly target must be between $0.01 and $1,000,000."), 400
     save.hiring_role = role
     save.hiring_salary = salary
+    save.hiring_target = target
     save.hiring_open = True
     db.session.commit()
     log_event(f"{user.username} opened a role ({role}) at {save.company_name}.")
-    return jsonify(success=True, hiring_open=True, hiring_role=role, hiring_salary=salary)
+    return jsonify(success=True, hiring_open=True, hiring_role=role,
+                   hiring_salary=salary, hiring_target=target)
 
 
 @app.route("/api/game/company/roster")
@@ -2863,9 +3035,11 @@ def game_company_roster():
     for s in staff:
         owner = db.session.get(User, s.user_id)
         out.append({"username": owner.username if owner else "?", "role": s.job_title,
-                     "salary": s.salary, "since_day": s.job_start_day})
+                     "salary": s.salary, "target": s.weekly_target,
+                     "since_day": s.job_start_day})
     return jsonify(success=True, staff=out, hiring_open=save.hiring_open,
-                    hiring_role=save.hiring_role, hiring_salary=save.hiring_salary)
+                    hiring_role=save.hiring_role, hiring_salary=save.hiring_salary,
+                    hiring_target=save.hiring_target or 0.0)
 
 
 @app.route("/api/game/quit_job", methods=["POST"])
@@ -2919,6 +3093,7 @@ def game_start_business():
     save.employer_user_id = None
     save.hiring_open = False
     save.hiring_role = None
+    save.hiring_target = 0.0
     award_credits(user, "business", commit=False)
     db.session.commit()
     log_event(f"{user.username} founded {name} with ${BUSINESS_STARTUP_COST:,.0f} in startup capital.")
@@ -3392,10 +3567,12 @@ def game_investor_reply():
     data = request.get_json(silent=True) or {}
     msg_id = data.get("id")
     reply_text = (data.get("message") or "").strip()
-    if not reply_text:
-        return jsonify(success=False, msg="Write a reply first.")
-
     user = current_user()
+    image = _owned_image(user.id, data.get("image_id"))
+    if data.get("image_id") not in (None, "") and not image:
+        return jsonify(success=False, msg="Picture not found in your library."), 404
+    if not reply_text and not image:
+        return jsonify(success=False, msg="Write a reply or attach a picture.")
     save = get_or_create_save(user)
     inbox = save.investor_inbox()
     target = next((m for m in inbox if m["id"] == msg_id and m["status"] == "pending"), None)
@@ -3407,7 +3584,8 @@ def game_investor_reply():
 
     save.mark_active()
     benefits = _apply_employee_benefits(save)
-    result = ai.investor_inbox_reply(client, target["message"], reply_text, user.language)
+    result = ai.investor_inbox_reply(client, target["message"], reply_text, user.language,
+                                     image_data_url=_image_data_url(image))
     invests = result["invests"]
     if invests and random.random() < benefits["investor_boost"]:
         pass
@@ -3418,6 +3596,8 @@ def game_investor_reply():
     target["status"] = "replied"
     target["reply"] = result["reply"]
     target["invested"] = invests
+    if image:
+        target["reply_image"] = image.to_dict()
 
     if invests:
         commission = round(client["net_worth"] * 0.005 * (1 + benefits["commission_boost"]), 2)

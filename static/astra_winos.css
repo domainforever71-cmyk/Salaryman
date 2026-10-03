@@ -69,7 +69,9 @@
 }
 .ws-icon {
   position: absolute;
-  width: 80px;
+  width: 84px;
+  height: 86px;
+  box-sizing: border-box;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;

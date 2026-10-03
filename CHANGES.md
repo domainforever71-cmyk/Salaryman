@@ -1,5 +1,16 @@
 # ASTRA update - what changed
 
+## Career mode fixes
+
+- Career age now advances from the career's own world-clock start point, including
+  months skipped during offline catch-up; calendar years start after 12 full months.
+- Weekly job salaries are paid at one-seventh per in-game day, and weekly commission
+  above the target is paid as a bonus on top of the posted salary.
+- Player-run company postings now include a weekly earnings target. Hired players
+  inherit that target, and above-target bonuses are funded by the employer.
+- Model-backed actions give up to 12 seconds for a response before using their
+  existing local fallback, reducing long stalls when the provider is slow.
+
 ## Stages 19-21 (this pass) - real work, a world, an economy
 
 * **New games start unemployed.** MYNT, MARKETS, STOCK DESK, WORK DESK, LinkedUp, SWAPMART etc.
