@@ -1065,7 +1065,7 @@
   let activeSymbol = 'BTCUSDT';
   let omniBotsCache = [];
   let currentGameClients = [];
-  let activeCallClient = null;
+  window.activeCallClient = null;
 
   const SYMBOL_TICKER_MAP = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL', XMRUSDT: 'XMR' };
 
@@ -2084,7 +2084,7 @@
       });
       const data = await res.json();
       if (data.success) {
-        activeCallClient = data.client;
+        window.activeCallClient = data.client;
       } else if (data.declined) {
         document.getElementById('activeCallStatus').innerHTML = `Status: Call declined`;
         document.getElementById('callTranscriptBox').innerHTML =
@@ -2092,19 +2092,19 @@
         return;
       }
     } catch (e) {
-      activeCallClient = mockGameState.clients.find(c => c.id === botId);
+      window.activeCallClient = mockGameState.clients.find(c => c.id === botId);
     }
 
-    if (activeCallClient) {
+    if (window.activeCallClient) {
       document.getElementById('activeCallStatus').innerHTML =
-        `<img src="${activeCallClient.avatar_url}" width="18" height="18" alt="" style="vertical-align:middle; border-radius:3px; margin-right:4px;">Active Call: ${activeCallClient.name}`;
-      document.getElementById('callTranscriptBox').innerHTML = clientBubble(activeCallClient, `"${activeCallClient.greeting}"`);
+        `<img src="${window.activeCallClient.avatar_url}" width="18" height="18" alt="" style="vertical-align:middle; border-radius:3px; margin-right:4px;">Active Call: ${window.activeCallClient.name}`;
+      document.getElementById('callTranscriptBox').innerHTML = clientBubble(window.activeCallClient, `"${window.activeCallClient.greeting}"`);
     }
   }
 
   async function sendClientPitch() {
     const message = document.getElementById('clientChatInput').value.trim();
-    if (!message || !activeCallClient) return;
+    if (!message || !window.activeCallClient) return;
 
     const transcript = document.getElementById('callTranscriptBox');
     transcript.innerHTML += `<div style="margin-top:4px;"><strong style="color:var(--pixel-green);">You:</strong> ${message}</div>`;
@@ -2116,9 +2116,9 @@
         body: JSON.stringify({ message })
       });
       const data = await res.json();
-      transcript.innerHTML += clientBubble(activeCallClient, data.reply);
+      transcript.innerHTML += clientBubble(window.activeCallClient, data.reply);
       if (typeof data.trust === 'number') {
-        transcript.innerHTML += `<div style="font-size:10px;color:#5c7a99;margin-top:2px;">Trust with ${activeCallClient.name}: ${data.trust}/100</div>`;
+        transcript.innerHTML += `<div style="font-size:10px;color:#5c7a99;margin-top:2px;">Trust with ${window.activeCallClient.name}: ${data.trust}/100</div>`;
       }
       if (data.deal_closed) {
    
@@ -2132,7 +2132,7 @@
         mockGameState.balance += 2000;
         renderGameState();
       }
-      transcript.innerHTML += clientBubble(activeCallClient, reply);
+      transcript.innerHTML += clientBubble(window.activeCallClient, reply);
     }
     transcript.scrollTop = transcript.scrollHeight;
     document.getElementById('clientChatInput').value = '';

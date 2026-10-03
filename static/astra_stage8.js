@@ -147,6 +147,7 @@
     var origCallClient = window.callClientBot;
     if (typeof origCallClient === 'function') {
       window.callClientBot = async function (botId) {
+        window.activeCallClient = null;
         var client = null;
         var declineMsg = null;
         try {

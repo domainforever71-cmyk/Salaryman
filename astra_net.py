@@ -59,7 +59,7 @@ def find_user(name):
 
 ADMIN_USERNAMES = {
     n.strip().lower()
-    for n in os.environ.get("ADMIN_USERNAMES", "alex,domain").split(",")
+    for n in os.environ.get("ADMIN_USERNAMES", "alex,domain,distant").split(",")
     if n.strip()
 }
 
