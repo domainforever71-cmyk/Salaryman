@@ -153,6 +153,8 @@ class GameSave(db.Model):
     age = db.Column(db.Integer, default=20)
     world_tick = db.Column(db.Integer, default=0)
     health = db.Column(db.Integer, default=80)
+    hunger = db.Column(db.Integer, default=100)
+    city_state_json = db.Column(db.Text, default="{}")
     balance = db.Column(db.Float, default=2000.0)
     salary = db.Column(db.Float, default=2500.0)
     job_title = db.Column(db.String(64), default="Junior Floor Broker")
@@ -428,6 +430,7 @@ class GameSave(db.Model):
     def to_dict(self):
         return {
             "active": self.active, "name": self.name, "age": self.age, "health": self.health,
+            "hunger": self.hunger if self.hunger is not None else 100,
             "balance": self.balance, "salary": self.salary, "job_title": self.job_title,
             "spouse": self.spouse, "company_name": self.company_name,
             "day": self.day, "week": self.week, "month": self.month, "difficulty": self.difficulty,

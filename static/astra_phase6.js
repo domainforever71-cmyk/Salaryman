@@ -24,8 +24,11 @@
   function jsStr(s) { return esc(s).replace(/'/g, "\\'"); }
   async function api(url, opts) {
     var res = await fetch(url, opts);
-    if (!res.ok && res.status !== 400 && res.status !== 403 && res.status !== 404) throw new Error(res.status);
-    return res.json();
+    var data = await res.json();
+    if (!res.ok && res.status !== 400 && res.status !== 403 && res.status !== 404) {
+      throw new Error(data.msg || res.status);
+    }
+    return data;
   }
   function post(url, body) {
     return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -615,6 +618,11 @@
       if (!host) return;
       if (!INBOX.items.length) { host.innerHTML = '<div class="terminal-panel" style="color:#888;">Nothing in the inbox right now.</div>'; return; }
       host.innerHTML = INBOX.items.slice().reverse().map(renderInboxItem).join('');
+      INBOX.items.forEach(function (m) {
+        if (m.status === 'pending' && window.AstraImages) {
+          window.AstraImages.mount('p6Image' + m.id, 'investor' + m.id);
+        }
+      });
       INBOX.items.forEach(function (m) { if (m.status === 'pending' && !m._spoken) { autoSpeak(m.message); m._spoken = true; } });
     } catch (e) {}
   }
@@ -624,6 +632,7 @@
       return '<div class="terminal-panel">' +
         '<div class="panel-header"><div class="panel-heading-title">' + esc(m.client_name) + '</div></div>' +
         '<div class="p6-msg" style="margin-bottom:8px;">' + esc(m.message) + speakBtn(m.message) + '</div>' +
+        '<div id="p6Image' + m.id + '" style="margin-bottom:6px;"></div>' +
         '<div style="display:flex;gap:6px;">' +
           '<input type="text" id="p6Reply' + m.id + '" class="d-input" placeholder="Your reply..." style="flex-grow:1;">' +
           '<button class="terminal-btn btn-action" onclick="AstraP6.replyInbox(' + m.id + ')">SEND</button>' +
@@ -635,6 +644,8 @@
       '<div class="panel-header"><div class="panel-heading-title">' + esc(m.client_name) + '</div>' +
       '<span class="' + (invested ? 'p6-win' : 'p6-lose') + '" style="font-size:10px;">' + (invested ? 'INVESTED' : 'DECLINED') + '</span></div>' +
       '<div class="p6-msg" style="color:#888;margin-bottom:4px;">You: ' + esc(m.message) + '</div>' +
+      (m.reply_image ? '<img alt="Attached picture" src="/api/images/' + Number(m.reply_image.id) +
+        '/content" style="display:block;max-width:220px;max-height:150px;margin:6px 0;">' : '') +
       '<div class="p6-msg">' + esc(m.reply) + '</div>' +
       (invested ? '<div class="p6-win" style="font-size:11px;margin-top:4px;">Commission: +' + money(m.commission) + '</div>' : '') +
     '</div>';
@@ -643,14 +654,15 @@
   async function replyInbox(id) {
     var input = $('p6Reply' + id);
     var msg = (input.value || '').trim();
-    if (!msg) return;
+    var imageId = window.AstraImages && window.AstraImages.selected('investor' + id);
+    if (!msg && !imageId) return;
     try {
-      var d = await post('/api/game/investors/reply', { id: id, message: msg });
+      var d = await post('/api/game/investors/reply', { id: id, message: msg, image_id: imageId });
       if (!d.success) { alert(d.msg || 'Could not send.'); return; }
       sfx(d.invests ? 'cash' : 'deny');
       refreshBalanceEverywhere(d.balance);
       loadInbox();
-    } catch (e) {}
+    } catch (e) { alert(e.message || 'Could not send your reply.'); }
   }
 
   /* =================================================================

@@ -488,6 +488,7 @@
         <button class="terminal-btn" id="nav-markets" data-i18n="nav_markets" onclick="switchView('markets')">[MARKETS & SEARCH]</button>
         <button class="terminal-btn" id="nav-bots" data-i18n="nav_bots" onclick="switchView('bots')">[OMNICHAT]</button>
         <button class="terminal-btn btn-start" id="nav-game" data-i18n="nav_game" onclick="switchView('game')">[BROKER SIMULATOR]</button>
+        <button class="terminal-btn" id="nav-maps" onclick="switchView('maps')">[MAPS]</button>
         <button class="terminal-btn" id="nav-settings" data-i18n="nav_settings" onclick="switchView('settings')">[SETTINGS]</button>
         <a href="/logout" class="terminal-btn btn-warning" data-i18n="nav_logout" style="text-decoration:none;">[LOGOUT]</a>
       </div>
@@ -590,6 +591,7 @@
           <div class="gh-card"><div class="gh-lbl">NAME / AGE</div><div class="gh-val" id="ghNameAge">Alex (20)</div></div>
           <div class="gh-card" onclick="explainMetric('balance')" style="cursor:help;"><div class="gh-lbl">BALANCE (USD)</div><div class="gh-val" id="ghBalance" style="color:var(--pixel-green);">$2,000</div></div>
           <div class="gh-card" onclick="explainMetric('health')" style="cursor:help;"><div class="gh-lbl">HEALTH</div><div class="gh-val" id="ghHealth" style="color:var(--pixel-cyan);">80 HP</div></div>
+          <div class="gh-card" onclick="switchView('maps')" style="cursor:pointer;" title="Open Maps to buy food and manage hunger"><div class="gh-lbl">HUNGER</div><div class="gh-val" id="ghHunger" style="color:var(--pixel-green);">100%</div></div>
           <div class="gh-card" onclick="explainMetric('stress')" style="cursor:help;"><div class="gh-lbl">STRESS</div><div class="gh-val" id="ghStress" style="color:var(--pixel-green);">20%</div></div>
           <div class="gh-card"><div class="gh-lbl">TIME VECTOR</div><div class="gh-val" id="ghTime">Day 1 | Wk 1 | Mo 1</div></div>
           <div class="gh-card" onclick="explainMetric('weekly_target')" style="cursor:help;"><div class="gh-lbl">WEEKLY TARGET</div><div class="gh-val" id="ghTarget" style="color:var(--pixel-yellow);">$800</div></div>
@@ -796,6 +798,10 @@
         </div>
 
       </div>
+    </div>
+
+    <div id="view-maps" class="app-view" style="height:70vh; min-height:480px; max-height:760px; padding:0; overflow:hidden;">
+      <iframe src="/maps" title="Maps city travel" style="display:block; width:100%; height:100%; min-height:480px; border:0; background:#010306;"></iframe>
     </div>
 
     <div id="view-markets" class="app-view">
@@ -1292,22 +1298,31 @@
     const code = document.getElementById('dialBotSelect').value;
     const input = document.getElementById('dialDirectiveInput');
     const query = (input.value || '').trim();
-    if (!code || !query) return;
+    const imageId = window.AstraImages && window.AstraImages.selected('botChat');
+    if (!code || (!query && !imageId)) return;
     input.value = '';
     try {
       const res = await fetch('/api/bots/dial', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, query })
+        body: JSON.stringify({ code, query, image_id: imageId })
       });
       const data = await res.json();
       if (data.success) {
         const consoleLog = document.getElementById('omniConsoleLog');
         if (consoleLog) {
+          if (data.image) consoleLog.insertAdjacentHTML('afterbegin', `<img alt="Your picture" src="/api/images/${data.image.id}/content" style="display:block;max-width:180px;max-height:120px;margin:5px 0;">`);
           consoleLog.insertAdjacentHTML('afterbegin', `<div><strong style="color:var(--pixel-cyan);">[${data.bot}]:</strong> ${data.output}</div>`);
         }
+        if (imageId && window.AstraImages) window.AstraImages.clear('botChat');
+      } else {
+        const consoleLog = document.getElementById('omniConsoleLog');
+        if (consoleLog) consoleLog.insertAdjacentHTML('afterbegin', `<div style="color:var(--pixel-red);">${data.msg || 'Picture could not be sent.'}</div>`);
       }
-    } catch (e) {}
+    } catch (e) {
+      const consoleLog = document.getElementById('omniConsoleLog');
+      if (consoleLog) consoleLog.insertAdjacentHTML('afterbegin', `<div style="color:var(--pixel-red);">Picture could not be sent.</div>`);
+    }
     loadOmniBots();
   }
 
@@ -1321,7 +1336,8 @@
   async function sendOmniConsole() {
     const input = document.getElementById('omniConsoleInput');
     const prompt = (input.value || '').trim();
-    if (!prompt) return;
+    const imageId = window.AstraImages && window.AstraImages.selected('omniChat');
+    if (!prompt && !imageId) return;
     input.value = '';
     const consoleLog = document.getElementById('omniConsoleLog');
     if (consoleLog) consoleLog.insertAdjacentHTML('afterbegin', `<div><strong style="color:var(--pixel-green);">You:</strong> ${prompt}</div>`);
@@ -1329,14 +1345,18 @@
       const res = await fetch('/api/ai/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'assistant', prompt })
+        body: JSON.stringify({ mode: 'assistant', prompt, image_id: imageId })
       });
       const data = await res.json();
-      if (data.response === '__CLEAR__') {
+      if (!res.ok || data.success === false) {
+        if (consoleLog) consoleLog.insertAdjacentHTML('afterbegin', `<div style="color:var(--pixel-red);">${data.msg || 'Picture could not be analyzed.'}</div>`);
+      } else if (data.response === '__CLEAR__') {
         if (consoleLog) consoleLog.innerHTML = '';
       } else if (consoleLog) {
+        if (data.image) consoleLog.insertAdjacentHTML('afterbegin', `<img alt="Your picture" src="/api/images/${data.image.id}/content" style="display:block;max-width:180px;max-height:120px;margin:5px 0;">`);
         consoleLog.insertAdjacentHTML('afterbegin', `<div><strong style="color:var(--pixel-cyan);">[OMNI-CORE]:</strong> ${data.response}</div>`);
       }
+      if (res.ok && data.success !== false && imageId && window.AstraImages) window.AstraImages.clear('omniChat');
     } catch (e) {
       if (consoleLog) consoleLog.insertAdjacentHTML('afterbegin', `<div style="color:var(--pixel-red);">Connection to OMNI-CORE failed.</div>`);
     }
@@ -1896,6 +1916,12 @@
     document.getElementById('ghNameAge').innerText = `${data.name} (${data.age})`;
     document.getElementById('ghBalance').innerText = `$${data.balance.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
     document.getElementById('ghHealth').innerText = `${data.health} HP`;
+    const hungerEl = document.getElementById('ghHunger');
+    if (hungerEl) {
+      const hunger = Math.max(0, Math.min(100, data.hunger ?? 100));
+      hungerEl.innerText = `${hunger}%`;
+      hungerEl.style.color = hunger > 50 ? 'var(--pixel-green)' : hunger > 20 ? 'var(--pixel-yellow)' : 'var(--pixel-red)';
+    }
     const stressEl = document.getElementById('ghStress');
     if (stressEl) {
       const stress = Math.max(0, Math.min(100, 100 - (data.health ?? 80)));
@@ -2108,19 +2134,26 @@
 
   async function sendClientPitch() {
     const message = document.getElementById('clientChatInput').value.trim();
-    if (!message || !window.activeCallClient) return;
+    const imageId = window.AstraImages && window.AstraImages.selected('clientPitch');
+    if ((!message && !imageId) || !window.activeCallClient) return;
 
     const transcript = document.getElementById('callTranscriptBox');
     transcript.innerHTML += `<div style="margin-top:4px;"><strong style="color:var(--pixel-green);">You:</strong> ${message}</div>`;
+    if (imageId) transcript.insertAdjacentHTML('beforeend', `<img alt="Your picture" src="/api/images/${imageId}/content" style="display:block;max-width:180px;max-height:120px;margin:5px 0;">`);
 
     try {
       const res = await fetch('/api/game/convince_client', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message, image_id: imageId })
       });
       const data = await res.json();
+      if (!res.ok || data.success === false) {
+        transcript.insertAdjacentHTML('beforeend', `<div style="color:var(--pixel-red);">${data.msg || 'Picture could not be sent.'}</div>`);
+        return;
+      }
       transcript.innerHTML += clientBubble(window.activeCallClient, data.reply);
+      if (imageId && window.AstraImages) window.AstraImages.clear('clientPitch');
       if (typeof data.trust === 'number') {
         transcript.innerHTML += `<div style="font-size:10px;color:#5c7a99;margin-top:2px;">Trust with ${window.activeCallClient.name}: ${data.trust}/100</div>`;
       }

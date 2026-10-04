@@ -47,6 +47,7 @@
 
   // ---- dynamic downloads registry (written by astra_stage17_appstore2.js) --
   var dynamicDownloads = []; // array of {id, name, hint, icon, progress(0-100|null), isFolder, children, action:{label,run}, open}
+  var savedPictures = [];
 
   function pushDownload(entry) {
     dynamicDownloads = dynamicDownloads.filter(function (e) { return e.id !== entry.id; });
@@ -127,6 +128,28 @@
     account: {
       label: 'ACCOUNT SAVES',
       files: function () { return accountItems(''); }
+    },
+    photos: {
+      label: 'PICTURES',
+      files: function () {
+        return savedPictures.map(function (image) {
+          return {
+            id: 'picture-' + image.id, imageId: image.id, name: image.filename,
+            icon: '\u25A7', hint: Math.ceil(image.size_bytes / 1024) + ' KB \u00B7 private to this account',
+            open: function () { if (window.AstraImages) window.AstraImages.show(image.id); },
+            action: {
+              label: 'DELETE',
+              run: function () {
+                if (!window.confirm('Delete ' + image.filename + ' from your picture library?')) return;
+                window.AstraImages.remove(image.id).then(function (images) {
+                  savedPictures = images;
+                  render();
+                }).catch(function (error) { window.alert(error.message); });
+              }
+            }
+          };
+        });
+      }
     }
   };
 
@@ -143,6 +166,8 @@
         '<div style="display:flex; gap:6px; margin-bottom:10px;">' + tabs + '</div>' +
         '<div id="accountTools" style="display:none;margin-bottom:8px;"><button class="terminal-btn" onclick="AstraFiles.newAccountFile()">NEW ACCOUNT FILE</button>' +
           '<span style="font-size:10px;color:#8a97ad;margin-left:6px;">Private to this account; syncs across your devices.</span></div>' +
+        '<div id="photosTools" style="display:none;margin-bottom:8px;"><div id="filesPhotoAttach"></div>' +
+          '<span style="font-size:10px;color:#8a97ad;">Private to this account; reuse saved pictures in client, investor, OMNI, and bot conversations.</span></div>' +
         '<div id="filesBreadcrumb" style="font-size:10px; color:#5c7a99; margin-bottom:6px;"></div>' +
         '<div id="filesListing" style="display:flex; flex-direction:column; gap:6px;"></div>' +
         '<div id="accountFileEditor" style="display:none;margin-top:10px;border-top:1px solid var(--border-color);padding-top:8px;">' +
@@ -228,6 +253,19 @@
     return FOLDERS[currentFolder].files();
   }
 
+  function loadPictures() {
+    if (!window.AstraImages) return;
+    window.AstraImages.list().then(function (images) {
+      savedPictures = images;
+      if (currentFolder === 'photos') render();
+    }).catch(function (error) {
+      var listing = $('filesListing');
+      if (listing && currentFolder === 'photos') {
+        listing.innerHTML = '<div style="color:var(--pixel-red);font-size:11px;">' + esc(error.message) + '</div>';
+      }
+    });
+  }
+
   function render() {
     var listing = $('filesListing');
     if (!listing) return;
@@ -242,6 +280,8 @@
     }
     var tools = $('accountTools');
     if (tools) tools.style.display = currentFolder === 'account' && !pathStack.length ? '' : 'none';
+    var photosTools = $('photosTools');
+    if (photosTools) photosTools.style.display = currentFolder === 'photos' && !pathStack.length ? '' : 'none';
     var files = currentList();
     var rows = [];
     if (pathStack.length) {
@@ -274,7 +314,7 @@
         rows.push('<div class="d-list-item">' +
           '<div><span style="color:var(--pixel-cyan);">' + icon + ' ' + esc(f.name) + '</span>' +
           '<div style="font-size:9.5px; color:#888;">' + esc(f.hint || '') + '</div>' + progressBar + '</div>' +
-          actionBtn + '</div>');
+          (f.imageId ? '<span><button class="terminal-btn" onclick="AstraFiles.openFile(' + i + ')">VIEW</button>' + actionBtn + '</span>' : actionBtn) + '</div>');
       });
     }
     listing.innerHTML = rows.join('');
@@ -282,7 +322,11 @@
   }
 
   window.AstraFiles = {
-    open: function (key) { currentFolder = key; pathStack = []; render(); },
+    open: function (key) {
+      if (!FOLDERS[key]) return;
+      currentFolder = key; pathStack = []; render();
+      if (key === 'photos') loadPictures();
+    },
     up: function () { pathStack.pop(); render(); },
     openFile: function (i) {
       var files = currentList();
@@ -319,9 +363,14 @@
     view.className = 'app-view';
     view.innerHTML = viewHtml();
     wrapper.insertBefore(view, host);
+    if (window.AstraImages) window.AstraImages.mount('filesPhotoAttach', 'savedPhotos');
     addNavButton('files', '[\u2637] FILES');
     render();
     window.addEventListener('astra:desktop-state', render);
+    window.addEventListener('astra:images-updated', function (event) {
+      savedPictures = event.detail || [];
+      if (currentFolder === 'photos') render();
+    });
     done = true;
     if (window.winosRescanApps) window.winosRescanApps();
   }

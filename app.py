@@ -822,6 +822,8 @@ def _valid_image_bytes(mime, raw):
 def _owned_image(user_id, image_id):
     if image_id in (None, ""):
         return None
+    if isinstance(image_id, bool):
+        return None
     try:
         image_id = int(image_id)
     except (TypeError, ValueError):
@@ -835,6 +837,13 @@ def _image_data_url(image):
     if not image:
         return None
     return f"data:{image.mime};base64,{base64.b64encode(image.payload).decode('ascii')}"
+
+
+def _image_analysis_error():
+    return jsonify(
+        success=False,
+        msg="Pictures are saved, but image analysis needs OPENAI_API_KEY and a vision-capable OPENAI_MODEL.",
+    ), 503
 
 
 @app.route("/api/images", methods=["GET", "POST"])
@@ -851,8 +860,11 @@ def saved_images():
     mime = str(data.get("mime") or "").lower().strip()
     if mime not in SAVED_IMAGE_TYPES:
         return jsonify(success=False, msg="Use a JPEG, PNG, GIF, or WebP image."), 400
+    encoded = data.get("data")
+    if not isinstance(encoded, str) or len(encoded) > (MAX_SAVED_IMAGE_BYTES * 4 // 3 + 4):
+        return jsonify(success=False, msg="Pictures must be 256 KB or smaller."), 413
     try:
-        raw = base64.b64decode(data.get("data") or "", validate=True)
+        raw = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError):
         return jsonify(success=False, msg="Image data was not valid base64."), 400
     if not raw:
@@ -868,7 +880,7 @@ def saved_images():
     if sum(image.size_bytes for image in existing) + len(raw) > MAX_SAVED_IMAGE_TOTAL_BYTES:
         return jsonify(success=False, msg="Picture library storage limit is 5 MB."), 400
 
-    filename = re.sub(r"[^\w.\- ]", "_", str(data.get("filename") or "picture"))[:128]
+    filename = re.sub(r"[^\w.\- ]", "_", str(data.get("filename") or "picture")[:256])[:128]
     image = ImageAsset(user_id=user.id, filename=filename, mime=mime,
                        size_bytes=len(raw), payload=raw)
     db.session.add(image)
@@ -1683,9 +1695,15 @@ def dial_bot():
     image = _owned_image(user.id, data.get("image_id"))
     if data.get("image_id") not in (None, "") and not image:
         return jsonify(success=False, msg="Picture not found in your library."), 404
+    if image and not ai.ai_available():
+        return _image_analysis_error()
     tone = PERSONA_TONES.get(user.bot_persona, PERSONA_TONES["ruthless"])
     trust_map = session.get("bot_trust") or {}
     trust = trust_map.get(bot["id"], 100)
+    if not query and image:
+        from game_data import BOT_REQUIREMENTS
+        keywords = BOT_REQUIREMENTS.get(bot["id"], {}).get("keywords", ["picture"])
+        query = f"Review the attached picture for a concrete {keywords[0]} observation."
     result = ai.dial_bot_reply(bot, tone, query or "Status report.", user.language,
                                trust=trust, image_data_url=_image_data_url(image))
     trust_map[bot["id"]] = max(0, min(100, trust + result["trust_delta"]))
@@ -1734,6 +1752,8 @@ def ai_command():
     image = _owned_image(user.id, data.get("image_id"))
     if data.get("image_id") not in (None, "") and not image:
         return jsonify(success=False, msg="Picture not found in your library."), 404
+    if image and not ai.ai_available():
+        return _image_analysis_error()
     if not prompt and not image:
         return jsonify(response="Enter a directive first.")
     if not prompt:
@@ -1753,8 +1773,13 @@ def ai_command():
     if mode == "market_scan":
         bot = random.choice(OMNI_BOTS)
         tone = PERSONA_TONES.get(user.bot_persona, PERSONA_TONES["ruthless"])
-        text = ai.dial_bot_reply(bot, tone, prompt, user.language)
-        return jsonify(response=f"[{bot['name']}] {text}")
+        if image and prompt == "Describe this picture.":
+            from game_data import BOT_REQUIREMENTS
+            keywords = BOT_REQUIREMENTS.get(bot["id"], {}).get("keywords", ["picture"])
+            prompt = f"Review the attached picture for a concrete {keywords[0]} observation."
+        text = ai.dial_bot_reply(bot, tone, prompt, user.language,
+                                 image_data_url=_image_data_url(image))
+        return jsonify(response=f"[{bot['name']}] {text}", image=image.to_dict() if image else None)
 
 
     lowered = prompt.strip().lower()
@@ -1926,6 +1951,8 @@ def game_start():
     save = get_or_create_save(user)
     save.name = (data.get("name") or user.username)[:64]
     save.health = int(data.get("health", 80))
+    save.hunger = 100
+    save.city_state_json = "{}"
     save.difficulty = data.get("difficulty", "Normal")
     save.active = True
     save.age = 20
@@ -2272,6 +2299,10 @@ def _run_day_tick(user, save, events):
     save.daily_profit = 0.0
 
     save.day += 1
+    save.hunger = max(0, (save.hunger if save.hunger is not None else 100) - 2)
+    if save.hunger <= 10:
+        save.health = max(0, save.health - 1)
+        events.append("You skipped meals and lost 1 health. Pick up food in Maps.")
     award_credits(user, "day", commit=False)
 
     if (save.day - 1) % 7 == 0:
@@ -2521,6 +2552,8 @@ def game_convince_client():
     image = _owned_image(user.id, data.get("image_id"))
     if data.get("image_id") not in (None, "") and not image:
         return jsonify(success=False, msg="Picture not found in your library."), 404
+    if image and not ai.ai_available():
+        return _image_analysis_error()
     if not message and not image:
         return jsonify(success=False, msg="Write a pitch or attach a picture."), 400
     client_id = session.get("active_call_client_id")
@@ -3571,6 +3604,8 @@ def game_investor_reply():
     image = _owned_image(user.id, data.get("image_id"))
     if data.get("image_id") not in (None, "") and not image:
         return jsonify(success=False, msg="Picture not found in your library."), 404
+    if image and not ai.ai_available():
+        return _image_analysis_error()
     if not reply_text and not image:
         return jsonify(success=False, msg="Write a reply or attach a picture.")
     save = get_or_create_save(user)
@@ -4228,19 +4263,23 @@ def messages_attach():
     user = current_user()
 
     target = find_user((data.get("to") or "").strip())
-    if not target or not _are_friends(user.id, target.id):
-        return jsonify(success=False, msg="Not friends with that operator."), 403
+    if not target:
+        return jsonify(success=False, msg="No operator with that username."), 404
+    if target.id == user.id:
+        return jsonify(success=False, msg="You can't message yourself."), 400
 
-    filename = re.sub(r"[^\w.\- ]", "_", (data.get("filename") or "file"))[:128]
+    filename = re.sub(r"[^\w.\- ]", "_", str(data.get("filename") or "file")[:256])[:128]
     mime = (data.get("mime") or "application/octet-stream")[:64]
     payload_b64 = data.get("data") or ""
     encrypt = bool(data.get("encrypt"))
     pin = str(data.get("pin", ""))
     caption = (data.get("body") or "").strip()[:2000]
 
+    if not isinstance(payload_b64, str) or len(payload_b64) > (MAX_ATTACHMENT_BYTES * 4 // 3 + 4):
+        return jsonify(success=False, msg="Attachments are capped at 256 KB in this build."), 413
     try:
         raw = base64.b64decode(payload_b64, validate=True)
-    except Exception:
+    except (ValueError, TypeError):
         return jsonify(success=False, msg="Attachment payload was not valid base64.")
     if not raw:
         return jsonify(success=False, msg="That file is empty.")
@@ -4293,6 +4332,31 @@ def messages_attachment_fetch(att_id):
     if plain_b64 is None:
         return jsonify(success=False, msg="Wrong PIN, or the file was tampered with.")
     return jsonify(success=True, filename=att.filename, mime=att.mime, data=plain_b64)
+
+
+@app.route("/api/messages/attachment/<int:att_id>/content")
+@login_required
+def messages_attachment_image_content(att_id):
+    user = current_user()
+    attachment = db.session.get(DMAttachment, att_id)
+    message = attachment.message if attachment else None
+    if (
+        not attachment or not message
+        or user.id not in (message.sender_id, message.recipient_id)
+        or attachment.encrypted
+        or attachment.mime not in SAVED_IMAGE_TYPES
+    ):
+        return jsonify(success=False, msg="Picture not found."), 404
+    try:
+        raw = base64.b64decode(attachment.payload, validate=True)
+    except (ValueError, TypeError):
+        return jsonify(success=False, msg="Picture data is unavailable."), 500
+    if not _valid_image_bytes(attachment.mime, raw):
+        return jsonify(success=False, msg="Picture data is unavailable."), 500
+    return Response(raw, mimetype=attachment.mime, headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 
@@ -4762,6 +4826,8 @@ def coop_poll():
 from world import init_world
 import world
 from economy import init_economy, cpi
+from city_travel import init_city
+init_city(app, login_required, current_user, get_or_create_save)
 init_world(app, login_required, admin_required, current_user, get_or_create_save,
            market_state, price_index=cpi)
 init_economy(app, login_required, current_user, get_or_create_save,

@@ -1485,18 +1485,28 @@
       var bodyEl = $('axMsgBody');
       var pinEl = $('axMsgPin');
       var body = (bodyEl && bodyEl.value || '').trim();
-      if (!body) return;
+      var imageId = window.AstraImages && window.AstraImages.selected('directMessage');
+      if (!body && !imageId) return;
       var payload = { to: MSG.active, body: body, encrypt: !!MSG.pendingEncrypt };
       if (MSG.pendingEncrypt) {
         payload.pin = (pinEl && pinEl.value || '').trim();
         if (!/^\d{4,8}$/.test(payload.pin)) { sfx('deny'); alert('Pick a 4-8 digit PIN for this encrypted message, then share it with them however you trust.'); return; }
       }
       try {
-        var d = await post('/api/messages/send', payload);
+        var endpoint = '/api/messages/send';
+        if (imageId) {
+          var image = await window.AstraImages.data(imageId);
+          payload.filename = image.filename;
+          payload.mime = image.mime;
+          payload.data = image.data;
+          endpoint = '/api/messages/attach';
+        }
+        var d = await post(endpoint, payload);
         if (!d.success) { sfx('deny'); alert(d.msg || 'Send failed.'); return; }
         sfx('confirm');
         bodyEl.value = '';
         if (pinEl) pinEl.value = '';
+        if (imageId && window.AstraImages) window.AstraImages.clear('directMessage');
         openThread(MSG.active);
       } catch (e) { sfx('error'); }
     }

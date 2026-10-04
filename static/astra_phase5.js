@@ -753,6 +753,10 @@
       }
       if (m.attachment) {
         var a = m.attachment;
+        if (!a.encrypted && /^image\/(jpeg|png|gif|webp)$/.test(a.mime || '')) {
+          inner += '<img alt="' + esc(a.filename) + '" src="/api/messages/attachment/' + Number(a.id) +
+            '/content" style="display:block;max-width:220px;max-height:160px;object-fit:contain;margin:6px 0;">';
+        }
         inner += '<div class="p5-att">' +
           '<span style="color:' + (a.encrypted ? 'var(--pixel-yellow)' : 'var(--pixel-cyan)') + ';">' +
             (a.encrypted ? '[LOCKED FILE]' : '[FILE]') + '</span>' +
@@ -781,10 +785,12 @@
       '<button class="p5-chip" onclick="document.getElementById(\'p5File\').click()">[ATTACH FILE]</button>' +
       '<span id="p5FileName" style="font-size:10.5px;color:#5c7a99;">No file selected \u00b7 256 KB max</span>' +
       '<button class="p5-chip" id="p5SendFile" onclick="AstraP5.sendAttachment()" disabled>[SEND FILE]</button>' +
+      '<div id="p5SavedImage" style="width:100%;"></div>' +
       '<span style="flex:1;"></span>' +
       '<button class="p5-chip" onclick="AstraP5.editThreadKey()" id="p5KeyBtn" ' +
         'title="Stored in this browser only - never sent to the server">[THREAD KEY]</button>';
     composer.appendChild(row);
+    if (window.AstraImages) window.AstraImages.mount('p5SavedImage', 'directMessage');
   }
 
   function refreshKeyBtn() {

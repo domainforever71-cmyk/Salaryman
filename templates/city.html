@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salaryman - City Map</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='city.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">MAPS <span>// ASTRA CITY</span></div>
+    <div class="topright"><span class="needs" id="needs">CAREER NEEDS</span><span class="wallet" id="wallet">$0</span><button class="taxi-btn" id="bagBtn">FOOD BAG</button><button class="taxi-btn" id="taxiBtn">CALL TAXI</button></div>
+  </header>
+
+  <div class="searchrow">
+    <label class="search" for="homeSearch">
+      <span class="prompt">&gt;</span>
+      <input id="homeSearch" type="text" placeholder="Search destinations, food, work..." autocomplete="off">
+    </label>
+    <ul class="results" id="results" hidden></ul>
+  </div>
+
+  <main class="mapwrap" id="mapwrap">
+    <svg id="map" role="img" aria-label="City map">
+      <g id="ground"></g><g id="fillers"></g><g id="labels"></g><g id="traffic"></g>
+      <path id="route" d="" class="route"/>
+      <g id="places"></g>
+      <g id="taxi" hidden><rect x="-11" y="-6" width="22" height="12" rx="3"/><rect x="-3" y="-4" width="8" height="8" fill="#000" opacity=".5"/></g>
+      <g id="player" hidden><rect x="-12" y="-7" width="24" height="14" rx="3"/><rect x="-4" y="-5" width="9" height="10" fill="#000" opacity=".55"/></g>
+      <g id="walker" class="walker" hidden><circle cy="-6" r="4"/><path d="M0 -1V8M0 2L-6 6M0 2L6 6M0 8L-5 14M0 8L5 14"/></g>
+      <g id="border"></g>
+    </svg>
+
+    <div class="edge top"></div><div class="edge bottom"></div><div class="edge left"></div><div class="edge right"></div>
+    <div class="drivehud" id="driveHud" hidden>
+      <strong id="driveTitle">CITY DRIVE</strong><span id="driveReadout">SPEED 0</span>
+      <div class="drive-meter"><i id="driveMeter"></i></div>
+      <div class="drive-controls">
+        <button data-drive="left">◀ STEER</button><button data-drive="brake">BRAKE</button>
+        <button data-drive="accelerate">ACCELERATE</button><button data-drive="right">STEER ▶</button>
+      </div>
+      <small>Steer around traffic, brake before turns, and accelerate on clear roads.</small>
+    </div>
+
+    <div class="zoomctl">
+      <button id="zIn" aria-label="Zoom in">+</button><button id="zOut" aria-label="Zoom out">-</button><button id="zHome" aria-label="Recenter">&#8962;</button>
+    </div>
+    <div class="minibox"><svg id="mini" viewBox="0 0 3600 2400" preserveAspectRatio="none"></svg></div>
+  </main>
+
+  <div class="legend">
+    <span><i class="k market"></i>SUPERMARKET</span><span><i class="k shop"></i>CAR SHOP</span><span><i class="k apt"></i>APARTMENTS</span>
+    <span><i class="k road"></i>HIGHWAY</span><span class="hint">CLICK A DESTINATION &middot; WALK FREE &middot; DRIVE OR CALL A TAXI</span>
+  </div>
+  <div class="status" id="status">Click a building on the map.</div>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="win" role="dialog" aria-modal="true">
+      <div class="win-title"><span id="winTitle"></span><button id="winClose" aria-label="Close">X</button></div>
+      <div class="win-body" id="winBody"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='city.js') }}"></script>
+</body>
+</html>

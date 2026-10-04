@@ -51,7 +51,7 @@
     stockdesk: '$', civics: '\u2696', blabber: '\u263A', notespro: '\u2712', adminplus: '\u2605',
     // Stage 25 (astra_stage25_desk.js / _mail.js / _privacy.js): the real
     // brokerage desk (dashboard/MYNT reworked in place), mail and privacy.
-    mail: '\u2709', privacy: '\u26E8'
+    mail: '\u2709', privacy: '\u26E8', maps: '\u25CE'
   };
   function iconFor(id) { return ICONS[id] || '\u25A2'; }
 
@@ -86,7 +86,8 @@
     appstore: { cat: 'system', flag: 'files' }, streamtube: { cat: 'fun' }, blognet: { cat: 'info' },
     workdesk: { cat: 'office' }, admin: { cat: 'system' },
     stockdesk: { cat: 'finance' }, civics: { cat: 'info' }, blabber: { cat: 'social' }, notespro: { cat: 'utility' }, adminplus: { cat: 'system' },
-    mail: { cat: 'social' }, privacy: { cat: 'system', flag: 'settings' }
+    mail: { cat: 'social' }, privacy: { cat: 'system', flag: 'settings' },
+    maps: { cat: 'utility' }
   };
   var CAT_ACCENT = {
     finance: '#00ffcc', office: '#ffbb00', social: '#4aa3ff',

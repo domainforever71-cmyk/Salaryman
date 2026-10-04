@@ -11,6 +11,23 @@
 - Model-backed actions give up to 12 seconds for a response before using their
   existing local fallback, reducing long stalls when the provider is slow.
 
+## Desktop pictures and icon layout
+
+- Desktop icons snap to a consistent grid, restore to the nearest open slot after
+  viewport changes, and swap positions instead of stacking when dragged together.
+- Added a private Pictures library stored in the existing app database, with
+  per-account access checks and JPEG/PNG/GIF/WebP validation. The limits are
+  256 KB per picture, 50 pictures, and 5 MB total per account.
+- Saved pictures can be attached to client pitches, investor replies, OMNI-CORE,
+  OMNI bots, and direct messages. Unencrypted DM pictures render inline for both
+  participants; encrypted files remain locked until decrypted.
+- Saving and sharing require no external image-storage service. To have OMNI,
+  bots, or clients visually interpret a picture, configure the existing
+  `OPENAI_API_KEY` and a vision-capable `OPENAI_MODEL`; without them, the app
+  reports that analysis is unavailable while the picture remains saved locally
+  in the app's database. Pictures sent for analysis are transmitted to the
+  configured OpenAI API.
+
 ## Stages 19-21 (this pass) - real work, a world, an economy
 
 * **New games start unemployed.** MYNT, MARKETS, STOCK DESK, WORK DESK, LinkedUp, SWAPMART etc.

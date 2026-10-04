@@ -44,7 +44,7 @@
   // appstore/workdesk/admin/adminplus build their own nav buttons and gate themselves
   // (job status / is_admin); leaving them out of this list made applyLocks() hide them forever.
   var SYSTEM_APPS = ['game', 'browser', 'files', 'settings', 'profile', 'calc', 'tasks', 'messages', 'bank',
-    'terminal', 'reader', 'news', 'appstore', 'workdesk', 'admin', 'adminplus'];
+    'terminal', 'reader', 'news', 'appstore', 'workdesk', 'admin', 'adminplus', 'maps'];
 
   // The full catalog the App Store can offer. Kept as a static list (rather
   // than derived by scanning the DOM for nav-<id> buttons) because most of

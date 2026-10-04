@@ -159,9 +159,22 @@
     refresh().catch(function (error) { status(key, error.message); });
   }
 
+  function initializeDefaultControls() {
+    mount('clientImageAttach', 'clientPitch');
+    mount('omniImageAttach', 'omniChat');
+    mount('botImageAttach', 'botChat');
+  }
+
   window.AstraImages = {
     mount: mount,
     selected: selected,
+    clear: function (key) {
+      var control = controls[key];
+      var select = control && document.getElementById(control.selectId);
+      if (select) select.value = '';
+      renderPreview(key);
+      status(key, '');
+    },
     list: refresh,
     info: function (id) {
       return libraries.find(function (image) { return Number(image.id) === Number(id); }) || null;
@@ -169,8 +182,13 @@
     show: function (id) {
       var image = this.info(id);
       if (!image) return;
-      var popup = window.open('/api/images/' + image.id + '/content', '_blank', 'noopener');
-      if (!popup) window.location.href = '/api/images/' + image.id + '/content';
+      var overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:100200;background:rgba(0,0,0,.88);' +
+        'display:flex;align-items:center;justify-content:center;padding:24px;cursor:zoom-out;';
+      overlay.innerHTML = '<img alt="' + esc(image.filename) + '" src="/api/images/' + image.id +
+        '/content" style="max-width:100%;max-height:100%;object-fit:contain;">';
+      overlay.addEventListener('click', function () { overlay.remove(); });
+      document.body.appendChild(overlay);
     },
     remove: function (id) {
       return request('/api/images/' + id, { method: 'DELETE' }).then(refresh);
@@ -193,4 +211,9 @@
       });
     }
   };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeDefaultControls);
+  } else {
+    initializeDefaultControls();
+  }
 })();

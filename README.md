@@ -14,6 +14,20 @@ python app.py
 Open <http://127.0.0.1:3000>. Register on the login screen, then start a career
 from the Broker Simulator tab.
 
+## Maps and daily needs
+
+The preinstalled **MAPS** desktop app opens Astra City, a connected retro map
+with homes, neighborhoods, downtown, offices, food stops, a car dealer, fuel,
+parking, a clinic, taxi pickup and highway routes. Choose a destination to
+compare a free walk, driving your owned car, or a taxi; route estimates factor
+in distance, traffic, road conditions and vehicle stats. Walks and trips play
+out on the map, and driving has speed, brake and steering controls.
+
+Career balance pays for cars, taxi fares, fuel and food. Buy groceries at
+FreshMart and eat from the FOOD BAG, or order a meal at Pixel Plate. Hunger
+falls as career days pass; staying hungry can cost health. The Career HUD and
+Maps app share the same health, hunger and wallet save.
+
 It runs without an API key. OMNI-CORE drops to a local command set that still
 reads live game state, and the omni-bots use templated lines. Set
 `OPENAI_API_KEY` (or the existing `OPEN_AI_KEY` spelling) to enable OpenAI
