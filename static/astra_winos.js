@@ -539,10 +539,18 @@
     var searchInput = $('winosSearchInput');
     if (searchInput) {
       searchInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && searchInput.value.trim()) {
-          // Placeholder hook for the in-game AI search engine planned next -
-          // for now it opens the closest existing surface (crypto search).
-          openApp('markets');
+        if (e.key !== 'Enter' || !searchInput.value.trim()) return;
+        var query = searchInput.value.trim().toLowerCase();
+        var appId = null;
+        if (/\b(maps?|travel|city)\b/.test(query)) appId = 'maps';
+        else if (/\b(market|markets|stock|crypto|price|search)\b/.test(query)) appId = 'markets';
+        else appId = discoverApps().find(function (id) {
+          var label = labelFor(id).toLowerCase().replace(/[\[\]]/g, '').trim();
+          return label === query || label.indexOf(query) !== -1;
+        });
+        if (appId) {
+          e.preventDefault();
+          openApp(appId);
           searchInput.value = '';
         }
       });
@@ -569,11 +577,13 @@
     var view = $('view-' + id);
     if (!view) return; // unknown app id, nothing to do
 
-    if (!win[id]) createWindow(id, view);
+    var isNewWindow = !win[id];
+    if (isNewWindow) createWindow(id, view);
     var w = win[id];
     w.el.style.display = 'flex';
     w.opened = true;
     w.min = false;
+    if (id === 'maps' && isNewWindow) toggleMaximize(id);
     focusWindow(id);
     ensureTaskItem(id);
     recordRecent(id);

@@ -733,12 +733,13 @@
                <div class="d-list-item">
                  <div>
                    <div style="color:var(--pixel-cyan);">Start Your Own Business</div>
-                   <div style="font-size:10px; color:#aaa;">Cost: $20,000 upfront. Earns passive daily revenue, boosted by employees.</div>
+                   <div style="font-size:10px; color:#aaa;">Land: $10,000 &middot; Company: $250,000. Choose any business type; construction takes 1-2 in-game days.</div>
                  </div>
                </div>
                <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
                   <input type="text" id="ownFirmInput" class="d-input" placeholder="Business Name">
-                  <button class="terminal-btn btn-start" onclick="startOwnBusiness()">[+] FOUND BUSINESS ($20,000)</button>
+                  <input type="text" id="ownFirmTypeInput" class="d-input" placeholder="Business type (e.g. Car Dealership, Studio, Cafe)">
+                  <button class="terminal-btn btn-start" onclick="startOwnBusiness()">[+] BUY LAND & FOUND BUSINESS ($260,000)</button>
                </div>
 
                <!-- Stage 12: the founder-side UI for /api/game/company/set_listing and
@@ -1963,9 +1964,13 @@
 
     const bizBox = document.getElementById('businessStatusBox');
     if (bizBox) {
-      bizBox.innerHTML = data.job_status === 'business_owner'
-        ? `<span style="color:var(--pixel-green);">Running <strong>${data.company_name}</strong> since day ${data.business_started_day}. Capital invested: $${(data.business_capital||0).toLocaleString()}.</span>`
-        : 'No business founded yet.';
+      if (data.job_status === 'business_owner') {
+        const business = data.city_business || {};
+        const building = business.status === 'building';
+        bizBox.innerHTML = `<span style="color:var(--pixel-green);">${building ? 'Building' : 'Running'} <strong>${escHtml(data.company_name)}</strong> (${escHtml(business.type || 'General Business')}). ${building ? `Opens in ${business.days_left} in-game day(s), on day ${business.ready_day}.` : `Open since day ${data.business_started_day}.`} Capital invested: $${(data.business_capital||0).toLocaleString()}.</span>`;
+      } else {
+        bizBox.textContent = 'No business founded yet.';
+      }
     }
     if (data.job_status === 'business_owner') {
       refreshHiringDesk();
@@ -2357,17 +2362,19 @@
 
   async function startOwnBusiness() {
     const name = document.getElementById('ownFirmInput').value.trim();
-    if (!name) return;
+    const type = document.getElementById('ownFirmTypeInput').value.trim();
+    if (!name || !type) return;
     try {
       const res = await fetch('/api/game/start_business', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, type })
       });
       const data = await res.json();
       if (!data.success) { alert(data.msg || 'Could not start business.'); return; }
       document.getElementById('ownFirmInput').value = '';
+      document.getElementById('ownFirmTypeInput').value = '';
       await pollGameState();
-      showSystemModal('BUSINESS FOUNDED', `${name} is open for business. It'll generate passive daily revenue, boosted by every employee you hire.`);
+      showSystemModal('BUSINESS UNDER CONSTRUCTION', `${name} (${type}) has secured a city plot. Land: $10,000; company startup: $250,000. Opening in ${data.build_days} in-game day(s).`);
     } catch (e) { alert('Connection failed.'); }
   }
 
@@ -2386,7 +2393,11 @@
       const status = document.getElementById('hiringDeskStatus');
       const form = document.getElementById('hiringDeskForm');
       const closeBtn = document.getElementById('hiringCloseBtn');
-      if (data.hiring_open) {
+      if (data.business && data.business.status === 'building') {
+        status.textContent = `Your company is being built. Hiring opens in ${data.business.days_left} in-game day(s).`;
+        form.style.display = 'none';
+        closeBtn.style.display = 'none';
+      } else if (data.hiring_open) {
         status.innerHTML = `Open role: <strong style="color:var(--pixel-green);">${data.hiring_role}</strong> &mdash; $${(data.hiring_salary||0).toLocaleString()}/wk, target $${(data.hiring_target||0).toLocaleString()}/wk. Above-target commission is bonus pay. Live on every other player's CAREER board right now.`;
         form.style.display = 'none';
         closeBtn.style.display = 'inline-block';

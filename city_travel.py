@@ -1,13 +1,14 @@
 """Account-backed city travel and daily-needs routes."""
 
 import json
+import hashlib
 import math
 import random
 import time
 
 from flask import Blueprint, jsonify, request
 
-from models import db
+from models import GameSave, User, db
 
 
 CITY = {
@@ -45,6 +46,8 @@ CARS = {
 CAR_PAINTS = ["#e0b341", "#3d78c9", "#d9d9d9", "#c2423f", "#8a5bd6", "#00ffcc", "#ff3366"]
 FUEL_DELIVERY_FEE = 12
 FUEL_PRICE_PER_PERCENT = 0.7
+BUSINESS_LAND_COST = 10000.0
+BUSINESS_STARTUP_COST = 250000.0
 
 START_STATE = {
     "location": "apartmentsA",
@@ -56,7 +59,7 @@ START_STATE = {
 }
 
 
-def _state(save):
+def _state(save, extra_locations=()):
     try:
         value = json.loads(save.city_state_json or "{}")
     except (TypeError, ValueError):
@@ -64,7 +67,8 @@ def _state(save):
     state = dict(START_STATE)
     if isinstance(value, dict):
         state.update(value)
-    state["location"] = state["location"] if state["location"] in CITY else "apartmentsA"
+    valid_locations = set(CITY) | set(extra_locations)
+    state["location"] = state["location"] if state["location"] in valid_locations else "apartmentsA"
     inventory = state["inventory"] if isinstance(state["inventory"], dict) else {}
     state["inventory"] = {
         item: max(0, min(100, int(count)))
@@ -90,7 +94,85 @@ def _save_state(save, state):
     save.city_state_json = json.dumps(state, separators=(",", ":"))
 
 
-def _payload(save, state):
+def _business_id(save):
+    digest = hashlib.sha256(f"city-business:{save.user_id}".encode("utf-8")).hexdigest()[:12]
+    return f"business_{digest}"
+
+
+def _business_info(save):
+    try:
+        state = json.loads(save.city_state_json or "{}")
+    except (TypeError, ValueError):
+        state = {}
+    business = state.get("business") if isinstance(state, dict) else None
+    if not isinstance(business, dict):
+        business = {}
+    try:
+        ready_day = max(1, int(business.get("ready_day", save.business_started_day or save.day or 1)))
+    except (TypeError, ValueError):
+        ready_day = max(1, int(save.business_started_day or save.day or 1))
+    kind = str(business.get("type") or "General Business").strip()[:40] or "General Business"
+    return {
+        "id": _business_id(save),
+        "type": kind,
+        "ready_day": ready_day,
+        "status": "open" if (save.day or 1) >= ready_day else "building",
+    }
+
+
+def business_profile(save):
+    if not save or save.job_status != "business_owner":
+        return None
+    info = _business_info(save)
+    current_day = max(1, int(save.day or 1))
+    return {
+        "type": info["type"],
+        "ready_day": info["ready_day"],
+        "status": "open" if current_day >= info["ready_day"] else "building",
+        "days_left": max(0, info["ready_day"] - current_day),
+    }
+
+
+def _public_businesses():
+    saves = (GameSave.query.filter_by(job_status="business_owner")
+             .order_by(GameSave.user_id.asc()).all())
+    businesses = []
+    for index, save in enumerate(saves):
+        info = _business_info(save)
+        owner = db.session.get(User, save.user_id)
+        x = 12 + (index % 20)
+        y = 1 + (index // 20) * 2
+        businesses.append({
+            **info,
+            "id": info["id"],
+            "name": (save.company_name or "Unnamed Business")[:64],
+            "owner": owner.username if owner else "Operator",
+            "x": x,
+            "y": y,
+            "status": "open" if (save.day or 1) >= info["ready_day"] else "building",
+            "ready_day": info["ready_day"],
+            "hiring": bool(save.hiring_open),
+            "hiring_role": (save.hiring_role or "")[:64] if save.hiring_open else "",
+            "hiring_salary": round(save.hiring_salary or 0, 2) if save.hiring_open else 0,
+        })
+    return businesses
+
+
+def _locations(businesses):
+    locations = dict(CITY)
+    for business in businesses:
+        locations[business["id"]] = {
+            "name": business["name"],
+            "x": business["x"],
+            "y": business["y"],
+            "kind": "business",
+        }
+    return locations
+
+
+def _payload(save, state, businesses=None):
+    businesses = _public_businesses() if businesses is None else businesses
+    locations = _locations(businesses)
     cars = []
     for owned in state["owned_cars"]:
         spec = CARS.get(owned.get("id"))
@@ -108,16 +190,19 @@ def _payload(save, state):
         "current_car": state["current_car"],
         "driving_skill": state["driving_skill"],
         "active_trip": state["active_trip"],
-        "locations": CITY,
+        "locations": locations,
+        "businesses": businesses,
+        "business": _business_info(save) if save.job_status == "business_owner" else None,
         "food": FOOD,
         "car_catalog": CARS,
     }
 
 
-def _quote(state, destination, mode):
-    if destination not in CITY or state["location"] not in CITY or destination == state["location"]:
+def _quote(state, destination, mode, locations=None):
+    locations = locations or CITY
+    if destination not in locations or state["location"] not in locations or destination == state["location"]:
         return None
-    start, end = CITY[state["location"]], CITY[destination]
+    start, end = locations[state["location"]], locations[destination]
     blocks = abs(start["x"] - end["x"]) + abs(start["y"] - end["y"])
     distance = blocks * 0.3
     rush_hour = time.gmtime().tm_hour in (7, 8, 9, 16, 17, 18)
@@ -167,7 +252,8 @@ def _quote(state, destination, mode):
     }
 
 
-def init_city(app, login_required, current_user, get_or_create_save):
+def init_city(app, login_required, current_user, get_or_create_save,
+              award_credits=None, log_event=None):
     bp = Blueprint("city_travel", __name__)
 
     @bp.get("/maps")
@@ -176,11 +262,77 @@ def init_city(app, login_required, current_user, get_or_create_save):
         from flask import render_template
         return render_template("city.html")
 
+    @bp.post("/api/game/start_business")
+    @login_required
+    def start_business():
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()[:64]
+        business_type = (data.get("type") or "").strip()[:40]
+        if not name:
+            return jsonify(success=False, msg="Name your business first."), 400
+        if not business_type:
+            return jsonify(success=False, msg="Choose what kind of company you want to open."), 400
+
+        user = current_user()
+        save = get_or_create_save(user)
+        if not save.active:
+            return jsonify(success=False, msg="Start a career before founding a business."), 400
+        if save.job_status == "business_owner":
+            return jsonify(success=False, msg="You already own a business."), 409
+        total_cost = BUSINESS_LAND_COST + BUSINESS_STARTUP_COST
+        if save.balance < total_cost:
+            return jsonify(
+                success=False,
+                msg=f"Insufficient funds - land costs ${BUSINESS_LAND_COST:,.0f} and company startup costs ${BUSINESS_STARTUP_COST:,.0f}.",
+            ), 400
+
+        build_days = random.choice((1, 2))
+        ready_day = save.day + build_days
+        try:
+            city_state = json.loads(save.city_state_json or "{}")
+        except (TypeError, ValueError):
+            city_state = {}
+        if not isinstance(city_state, dict):
+            city_state = {}
+        city_state["business"] = {"type": business_type, "ready_day": ready_day, "build_days": build_days}
+        save.city_state_json = json.dumps(city_state, separators=(",", ":"))
+        save.balance = round(save.balance - total_cost, 2)
+        save.business_capital = BUSINESS_STARTUP_COST
+        save.business_started_day = ready_day
+        save.job_status = "business_owner"
+        save.job_title = f"Founder & CEO, {name}"
+        save.company_name = name
+        save.salary = 0.0
+        save.weekly_target = 0.0
+        save.weekly_commission = 0.0
+        save.boss_mood = 100
+        save.applied_firm = None
+        save.employer_user_id = None
+        save.hiring_open = False
+        save.hiring_role = None
+        save.hiring_salary = 0.0
+        save.hiring_target = 0.0
+        if award_credits:
+            award_credits(user, "business", commit=False)
+        db.session.commit()
+        if log_event:
+            log_event(
+                f"{user.username} bought land for ${BUSINESS_LAND_COST:,.0f} and founded "
+                f"{name} ({business_type}) with ${BUSINESS_STARTUP_COST:,.0f} in startup capital."
+            )
+        return jsonify(
+            success=True, name=name, type=business_type, land_cost=BUSINESS_LAND_COST,
+            startup_cost=BUSINESS_STARTUP_COST, build_days=build_days, ready_day=ready_day,
+            balance=save.balance,
+        )
+
     @bp.get("/api/game/city/state")
     @login_required
     def city_state():
         save = get_or_create_save(current_user())
-        state = _state(save)
+        businesses = _public_businesses()
+        locations = _locations(businesses)
+        state = _state(save, locations)
         if (state["active_trip"] and state["active_trip"].get("mode") == "taxi"
                 and time.time() >= state["active_trip"].get("arrive_after", 0)):
             trip = state["active_trip"]
@@ -190,22 +342,26 @@ def init_city(app, login_required, current_user, get_or_create_save):
             state["active_trip"] = None
             _save_state(save, state)
             db.session.commit()
-        return jsonify(_payload(save, state))
+        if state["location"] not in locations:
+            state["location"] = "apartmentsA"
+        return jsonify(_payload(save, state, businesses))
 
     @bp.get("/api/game/city/quotes")
     @login_required
     def city_quotes():
         save = get_or_create_save(current_user())
-        state = _state(save)
+        businesses = _public_businesses()
+        locations = _locations(businesses)
+        state = _state(save, locations)
         destination = request.args.get("destination", "")
         if not save.active:
             return jsonify(success=False, msg="Start a career before taking a trip."), 400
         if state["active_trip"]:
             return jsonify(success=False, msg="Finish your current trip first."), 409
-        if destination not in CITY or destination == state["location"]:
+        if destination not in locations or destination == state["location"]:
             return jsonify(success=False, msg="Choose a different destination."), 400
-        quotes = {mode: _quote(state, destination, mode) for mode in ("walk", "drive", "taxi")}
-        return jsonify(success=True, destination=destination, name=CITY[destination]["name"], quotes=quotes)
+        quotes = {mode: _quote(state, destination, mode, locations) for mode in ("walk", "drive", "taxi")}
+        return jsonify(success=True, destination=destination, name=locations[destination]["name"], quotes=quotes)
 
     @bp.post("/api/game/city/action")
     @login_required
@@ -213,7 +369,9 @@ def init_city(app, login_required, current_user, get_or_create_save):
         data = request.get_json(silent=True) or {}
         action = data.get("action")
         save = get_or_create_save(current_user())
-        state = _state(save)
+        businesses = _public_businesses()
+        locations = _locations(businesses)
+        state = _state(save, locations)
         if not save.active:
             return jsonify(success=False, msg="Start a career before using Maps."), 400
 
@@ -316,7 +474,7 @@ def init_city(app, login_required, current_user, get_or_create_save):
             destination, mode = data.get("destination"), data.get("mode")
             if state["active_trip"]:
                 return jsonify(success=False, msg="Finish your current trip first."), 409
-            quote = _quote(state, destination, mode)
+            quote = _quote(state, destination, mode, locations)
             if not quote or not quote["available"]:
                 return jsonify(success=False, msg=(quote or {}).get("reason", "Choose a valid destination and travel mode.")), 400
             if save.balance < quote["price"]:
@@ -329,7 +487,7 @@ def init_city(app, login_required, current_user, get_or_create_save):
                 car["fuel"] = max(0, car.get("fuel", 0) - quote["blocks"] * 1.5 * spec["efficiency"])
             now = time.time()
             quote["destination"] = destination
-            quote["destination_name"] = CITY[destination]["name"]
+            quote["destination_name"] = locations[destination]["name"]
             quote["started_at"] = now
             min_arrival = now + max(3, min(10, quote["eta_seconds"] * 0.25)) if mode == "drive" else now
             quote["driver_name"] = save.name
@@ -363,14 +521,14 @@ def init_city(app, login_required, current_user, get_or_create_save):
             state["active_trip"] = None
             _save_state(save, state)
             db.session.commit()
-            payload = _payload(save, state)
-            payload["message"] = event or f"Arrived at {CITY[state['location']]['name']}."
+            payload = _payload(save, state, businesses)
+            payload["message"] = event or f"Arrived at {locations[state['location']]['name']}."
             return jsonify(payload)
         else:
             return jsonify(success=False, msg="Unknown Maps action."), 400
 
         _save_state(save, state)
         db.session.commit()
-        return jsonify(_payload(save, state))
+        return jsonify(_payload(save, state, businesses))
 
     app.register_blueprint(bp)

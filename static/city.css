@@ -77,8 +77,11 @@ button { font-family: inherit; cursor: pointer; }
 @keyframes pulse { 50% { stroke: var(--pixel-yellow); fill: rgba(255,187,0,.2); stroke-width: 4; } }
 .route { fill: none; stroke: var(--pixel-yellow); stroke-width: 3; stroke-dasharray: 8 8; opacity: .9; }
 #taxi rect:first-child { fill: var(--pixel-yellow); stroke: #000; filter: drop-shadow(0 0 8px var(--pixel-yellow)); }
-#player rect:first-child { fill: var(--vehicle-color, var(--pixel-cyan)); stroke: #000; filter: drop-shadow(0 0 8px var(--vehicle-color, var(--pixel-cyan))); }
-#player text { fill: #fff; font: 8px var(--font-current); paint-order: stroke; stroke: #000; stroke-width: 2px; }
+#player .vehicle-body { fill: var(--vehicle-color, var(--pixel-cyan)); stroke: #fff; stroke-width: 2px; filter: drop-shadow(0 0 10px var(--vehicle-color, var(--pixel-cyan))); }
+#player .wheel { fill: #05070a; stroke: #d9e8ee; stroke-width: 1px; }
+#player .vehicle-glass { fill: #071a2a; stroke: #d9e8ee; stroke-width: 1px; }
+#player .headlight { fill: var(--pixel-yellow); stroke: #fff; stroke-width: .8px; }
+#player text { fill: #fff; font: 10px var(--font-current); paint-order: stroke; stroke: #000; stroke-width: 3px; }
 .walker circle { fill: var(--pixel-green); stroke: #000; stroke-width: 2; }
 .walker path { fill: none; stroke: var(--pixel-green); stroke-width: 4; stroke-linecap: square; }
 .tc.operator { filter: drop-shadow(0 0 5px var(--pixel-cyan)); }
@@ -103,6 +106,12 @@ button { font-family: inherit; cursor: pointer; }
 .travel-card strong { color: var(--pixel-green); }
 .travel-card.unavailable { opacity: .65; }
 .car-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.business-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; }
+.business-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border-color); padding: 9px; background: #02070b; }
+.business-card b { color: var(--pixel-cyan); }
+.business-card span, .business-card small { color: var(--text-main); }
+.business-card .hiring-tag { color: var(--pixel-yellow); }
+.business-place .hit { stroke-dasharray: 8 5; }
 .paint { display: inline-block; width: 12px; height: 12px; margin-right: 7px; border: 1px solid #d8e3ee; vertical-align: -1px; }
 .row .btn { margin: 0; font-size: 18px; }
 /* windows / modal */
@@ -155,5 +164,6 @@ button { font-family: inherit; cursor: pointer; }
 .drive-controls { grid-column: 1 / -1; display: flex; gap: 6px; justify-content: center; }
 .drive-controls button { border: 1px solid var(--pixel-cyan); background: #061116; color: var(--pixel-cyan); padding: 5px 8px; font: 15px var(--font-display); }
 .drive-controls button.active, .drive-controls button:active { background: var(--pixel-yellow); color: #000; border-color: var(--pixel-yellow); }
-@media (max-width: 700px) { .topbar { gap: 6px; padding: 6px; } .brand { font-size: 22px; } .topright { gap: 4px; } .needs { display: none; } .wallet { font-size: 17px; } .taxi-btn { font-size: 18px; padding: 4px 8px; } .drivehud { width: calc(100% - 16px); bottom: 8px; } .drive-controls { flex-wrap: wrap; } }
+.drive-controls #driveStop { border-color: var(--pixel-red); color: var(--pixel-red); }
+@media (max-width: 700px) { .topbar { gap: 6px; padding: 6px; align-items: flex-start; } .brand { font-size: 22px; } .topright { gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 76%; } .needs { display: none; } .wallet { font-size: 17px; } .taxi-btn { font-size: 15px; padding: 4px 6px; } .drivehud { width: calc(100% - 16px); bottom: 8px; } .drive-controls { flex-wrap: wrap; } }
 @media (max-width: 700px) { .minibox { width: 130px; height: 78px; } .hint { display: none; } }

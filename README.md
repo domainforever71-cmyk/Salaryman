@@ -28,6 +28,17 @@ FreshMart and eat from the FOOD BAG, or order a meal at Pixel Plate. Hunger
 falls as career days pass; staying hungry can cost health. The Career HUD and
 Maps app share the same health, hunger and wallet save.
 
+Driving keeps the car in view and under your control: accelerate to build
+speed, coast at your current speed, brake to slow or stop, and use STOP
+CAR/RESUME when you want a full stop. The desktop search routes Maps/travel
+queries to the Maps app instead of opening Markets for every query.
+
+Career operators can found a custom-named, custom-type company for $250,000
+after buying a $10,000 land plot. Construction takes one or two in-game days;
+the plot appears in the expanded Eastside Business Park and is visible and
+routable for other players. Once open, owners can post a player job listing
+and hire staff. The employee roster supports up to 30 named employees.
+
 It runs without an API key. OMNI-CORE drops to a local command set that still
 reads live game state, and the omni-bots use templated lines. Set
 `OPENAI_API_KEY` (or the existing `OPEN_AI_KEY` spelling) to enable OpenAI

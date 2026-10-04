@@ -10,7 +10,7 @@
 <body>
   <header class="topbar">
     <div class="brand">MAPS <span>// ASTRA CITY</span></div>
-    <div class="topright"><span class="needs" id="needs">CAREER NEEDS</span><span class="wallet" id="wallet">$0</span><button class="taxi-btn" id="bagBtn">FOOD BAG</button><button class="taxi-btn" id="orderFuelBtn">ORDER FUEL</button><button class="taxi-btn" id="taxiBtn">CALL TAXI</button></div>
+    <div class="topright"><span class="needs" id="needs">CAREER NEEDS</span><span class="wallet" id="wallet">$0</span><button class="taxi-btn" id="businessesBtn">CITY BUSINESSES</button><button class="taxi-btn" id="bagBtn">FOOD BAG</button><button class="taxi-btn" id="orderFuelBtn">ORDER FUEL</button><button class="taxi-btn" id="taxiBtn">CALL TAXI</button></div>
   </header>
 
   <div class="searchrow">
@@ -27,9 +27,19 @@
       <path id="route" d="" class="route"/>
       <g id="places"></g>
       <g id="taxi" hidden><rect x="-11" y="-6" width="22" height="12" rx="3"/><rect x="-3" y="-4" width="8" height="8" fill="#000" opacity=".5"/></g>
-      <g id="player" hidden><rect x="-12" y="-7" width="24" height="14" rx="3"/><rect x="-4" y="-5" width="9" height="10" fill="#000" opacity=".55"/><text id="playerName" x="0" y="-11" text-anchor="middle"></text></g>
       <g id="walker" class="walker" hidden><circle cy="-6" r="4"/><path d="M0 -1V8M0 2L-6 6M0 2L6 6M0 8L-5 14M0 8L5 14"/></g>
       <g id="border"></g>
+      <g id="player" class="player-car" hidden>
+        <rect class="wheel" x="-14" y="-11" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="6" y="-11" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="-14" y="6" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="6" y="6" width="8" height="5" rx="2"/>
+        <rect class="vehicle-body" x="-17" y="-9" width="34" height="18" rx="5"/>
+        <path class="vehicle-glass" d="M-8 -7H6L11 -3V4H-8Z"/>
+        <rect class="headlight" x="13" y="-6" width="4" height="4" rx="1"/>
+        <rect class="headlight" x="13" y="2" width="4" height="4" rx="1"/>
+        <text id="playerName" x="0" y="-15" text-anchor="middle"></text>
+      </g>
     </svg>
 
     <div class="edge top"></div><div class="edge bottom"></div><div class="edge left"></div><div class="edge right"></div>
@@ -39,19 +49,20 @@
       <div class="drive-controls">
         <button data-drive="left">◀ STEER</button><button data-drive="brake">BRAKE</button>
         <button data-drive="accelerate">ACCELERATE</button><button data-drive="right">STEER ▶</button>
+        <button id="driveStop" type="button">STOP CAR</button>
       </div>
-      <small>Steer around traffic, brake before turns, and accelerate on clear roads.</small>
+      <small>WASD / arrows steer, accelerate and brake. Speed coasts until you brake; stop and resume whenever you choose.</small>
     </div>
 
     <div class="zoomctl">
       <button id="zIn" aria-label="Zoom in">+</button><button id="zOut" aria-label="Zoom out">-</button><button id="zHome" aria-label="Recenter">&#8962;</button>
     </div>
-    <div class="minibox"><svg id="mini" viewBox="0 0 3600 2400" preserveAspectRatio="none"></svg></div>
+    <div class="minibox"><svg id="mini" viewBox="0 0 9600 6000" preserveAspectRatio="none"></svg></div>
   </main>
 
   <div class="legend">
     <span><i class="k market"></i>SUPERMARKET</span><span><i class="k shop"></i>CAR SHOP</span><span><i class="k apt"></i>APARTMENTS</span>
-    <span><i class="k road"></i>HIGHWAY</span><span class="hint">CLICK A DESTINATION &middot; WALK FREE &middot; DRIVE OR CALL A TAXI</span>
+    <span><i class="k road"></i>HIGHWAY</span><span class="hint">PLAYER BUSINESSES APPEAR IN THE EASTSIDE BUSINESS PARK &middot; CLICK TO ROUTE</span>
   </div>
   <div class="status" id="status">Click a building on the map.</div>
 

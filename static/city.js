@@ -20,15 +20,17 @@ const BLOCK = {
   apartmentsC: [3, 5], parking: [5, 6], apartmentsB: [8, 6], taxi_stand: [1, 6],
   suburban_house: [10, 6], highway: [6, 0]
 };
-const W = 3600, H = 2400, P = 300, BS = 264, MAXS = 2.4;
+let W = 9600, H = 6000;
+const P = 300, BS = 264, MAXS = 2.4;
 const $ = (id) => document.getElementById(id);
+const escapeHTML = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const overlay = $("overlay"), winTitle = $("winTitle"), winBody = $("winBody"), status = $("status"), svg = $("map");
 const money = (n) => "$" + Math.round(n).toLocaleString();
 const NAMES = Object.fromEntries(Object.entries(PLACE_INFO).map(([id, place]) => [id, place.name]));
 const origin = (id) => [BLOCK[id][0] * P + 18, BLOCK[id][1] * P + 18];
 const centerOf = (id) => { const [x, y] = origin(id); return [x + BS / 2, y + BS / 2]; };
 const DOORS = Object.fromEntries(Object.keys(BLOCK).map((k) => [k, [BLOCK[k][0] * P + 150, BLOCK[k][1] * P]]));
-let cityState = null, tripAnimation = null, driveScore = 0.72, driveSpeed = 0;
+let cityState = null, tripAnimation = null, driveScore = 0.72, driveSpeed = 0, driveResumeSpeed = 1, driveStopped = false;
 
 function openWindow(title, html) { winTitle.textContent = title; winBody.innerHTML = html; overlay.hidden = false; $("winClose").focus(); }
 function closeWindow() { overlay.hidden = true; }
@@ -46,6 +48,7 @@ async function requestState() {
   const data = await response.json();
   if (!response.ok || !data.success) throw new Error(data.msg || "Unable to load career city data.");
   cityState = data;
+  syncBusinesses(data.businesses || []);
   renderHUD();
   updatePlayerMarker();
   return data;
@@ -58,6 +61,7 @@ async function cityAction(action, values = {}) {
   const data = await response.json();
   if (!response.ok || !data.success) throw new Error(data.msg || "Maps action failed.");
   cityState = data;
+  syncBusinesses(data.businesses || []);
   renderHUD();
   updatePlayerMarker();
   return data;
@@ -134,14 +138,62 @@ const LABEL = Object.fromEntries(Object.keys(PLACE_INFO).map((id) => [id, [132, 
 function drawPlaces() {
   $("places").innerHTML = Object.keys(ART).map((id) => {
     const [ox, oy] = origin(id), [lx, ly] = LABEL[id];
-    return `<g class="place" id="${id}" tabindex="0" role="button" aria-label="${NAMES[id]}" transform="translate(${ox} ${oy})"><g class="art">${ART[id]()}</g>
-      <rect class="hit" x="4" y="4" width="256" height="256"/><text class="plabel" x="${lx}" y="${ly}">${NAMES[id].toUpperCase()}</text>
-      <text class="ptag" x="${lx}" y="${ly + 22}">${PLACE_INFO[id].kind}</text></g>`;
+    const business = id.startsWith("business_");
+    return `<g class="place${business ? " business-place" : ""}" id="${id}" tabindex="0" role="button" aria-label="${NAMES[id]}" transform="translate(${ox} ${oy})"><g class="art">${ART[id]()}</g>
+      <rect class="hit" x="4" y="4" width="256" height="256"/><text class="plabel" x="${lx}" y="${ly}">${escapeHTML(NAMES[id].toUpperCase())}</text>
+      <text class="ptag${business && PLACE_INFO[id].status === "open" ? " own" : ""}" x="${lx}" y="${ly + 22}">${escapeHTML(PLACE_INFO[id].kind)}</text></g>`;
   }).join("");
   document.querySelectorAll(".place").forEach((g) => {
     g.addEventListener("click", () => openPlace(g.id));
     g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPlace(g.id); } });
   });
+}
+
+const businessIds = new Set();
+function syncBusinesses(businesses) {
+  businessIds.forEach((id) => {
+    delete PLACE_INFO[id];
+    delete BLOCK[id];
+    delete DOORS[id];
+    delete NAMES[id];
+    delete ART[id];
+    delete LABEL[id];
+  });
+  businessIds.clear();
+  businesses.forEach((business) => {
+    const id = business.id;
+    const type = String(business.type || "General Business").slice(0, 40);
+    const kind = business.status === "open" ? type.toUpperCase() : `${type.toUpperCase()} · BUILDING`;
+    PLACE_INFO[id] = {
+      name: business.name,
+      kind,
+      keywords: `${type} ${business.name} ${business.owner} business company hiring ${business.status}`,
+      status: business.status
+    };
+    BLOCK[id] = [business.x, business.y];
+    NAMES[id] = business.name;
+    DOORS[id] = [business.x * P + 150, business.y * P];
+    LABEL[id] = [132, 176];
+    ART[id] = () => {
+      const underConstruction = business.status !== "open";
+      const sign = underConstruction ? "#ffbb00" : "#00ff66";
+      return lot(8, 8, 248, 248) +
+        `<rect x="28" y="34" width="208" height="134" fill="#586370" stroke="#080c12" stroke-width="5"/>` +
+        `<path d="M28 84H236V168H28Z" fill="#172c3a" stroke="#000" stroke-width="3"/>` +
+        `<path d="M48 102H104V150H48ZM122 102H176V150H122ZM194 102H216V150H194Z" fill="#89c6d8" stroke="#071019" stroke-width="4"/>` +
+        `<rect x="52" y="16" width="160" height="34" fill="${sign}" stroke="#000" stroke-width="3"/>` +
+        (underConstruction
+          ? `<path d="M198 12V-28M168 -28H236M212 -28L232 20M198 -10L174 20" stroke="#ffbb00" stroke-width="5"/>`
+          : `<path d="M44 176H220M54 188H210" stroke="#00ff66" stroke-width="5"/>`) +
+        lot(14, 202, 236, 42) + car(38, 216, "#e0b341") + car(124, 216, "#3d78c9") + car(204, 216, "#c2423f");
+    };
+    businessIds.add(id);
+  });
+  drawPlaces();
+  $("miniBusinesses").innerHTML = businesses.map((business) => {
+    const color = business.status === "open" ? "#00ff66" : "#ffbb00";
+    return `<rect x="${business.x * P + 18}" y="${business.y * P + 18}" width="${BS}" height="${BS}" fill="${color}"><title>${escapeHTML(business.name)} · ${escapeHTML(business.owner)}</title></rect>`;
+  }).join("");
 }
 
 // ---------- build the big city ----------
@@ -150,9 +202,10 @@ function drawPlaces() {
   const used = Object.fromEntries(Object.values(BLOCK).map(([i, j]) => [i + "," + j, 1]));
   const pal = [TERRA, GREY, BROWN, SLATE];
   let ground = `<rect width="${W}" height="${H}" fill="#14171b"/>`, fill = "", mini = `<rect width="${W}" height="${H}" fill="#0c0f13"/>`;
-  for (let j = 0; j < 8; j++) for (let i = 0; i < 12; i++) {
+  const rows = H / P, columns = W / P;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < columns; i++) {
     const bx = i * P + 18, by = j * P + 18, key = i + "," + j, park = key === "4,4" || key === "5,4";
-    const tint = park ? "#1b2a21" : i <= 3 ? "#232a30" : i <= 7 ? "#272a33" : "#2a2825";
+    const tint = park ? "#1b2a21" : i <= 3 ? "#232a30" : i <= 7 ? "#272a33" : i < 12 ? "#2a2825" : "#22302c";
     ground += `<rect x="${bx}" y="${by}" width="${BS}" height="${BS}" fill="${tint}"/>`;
     mini += `<rect x="${bx}" y="${by}" width="${BS}" height="${BS}" fill="${park ? "#1f4a30" : "#222a31"}"/>`;
     if (used[key]) continue;
@@ -174,16 +227,17 @@ function drawPlaces() {
   // roads, lane lines
   let roads = `<g class="roads">`, dash = `<g class="dash">`, lab = "";
   const hn = ["BROKER AVE", "MARKET ST", "WALL ST", "EAST LOOP HIGHWAY", "HARBOR AVE", "CHARTER RD", "MAPLE ROAD"];
-  for (let j = 1; j < 8; j++) { const y = j * P, wide = j === 4 ? 52 : 36; roads += `<rect x="0" y="${y - wide / 2}" width="${W}" height="${wide}"${j === 4 ? ' fill="#151b22"' : ""}/>`; dash += `<line x1="0" y1="${y}" x2="${W}" y2="${y}"${j === 4 ? ' stroke-width="4"' : ""}/>`; for (let k = 0; k < 3; k++) lab += `<text class="st" x="${300 + k * 1200}" y="${y + 5}">${hn[j - 1]}</text>`; mini += `<rect x="0" y="${y - 10}" width="${W}" height="20" fill="#0a0d11"/>`; }
-  for (let i = 1; i < 12; i++) { const x = i * P, wide = i === 6 ? 52 : 36; roads += `<rect x="${x - wide / 2}" y="0" width="${wide}" height="${H}"${i === 6 ? ' fill="#151b22"' : ""}/>`; dash += `<line x1="${x}" y1="0" x2="${x}" y2="${H}"${i === 6 ? ' stroke-width="4"' : ""}/>`; for (let k = 0; k < 2; k++) lab += `<text class="st" transform="translate(${x + 5} ${300 + k * 1200}) rotate(90)">${i}${["TH", "ST", "ND", "RD"][i > 3 ? 0 : i % 4] || "TH"} ST</text>`; mini += `<rect x="${x - 10}" y="0" width="20" height="${H}" fill="#0a0d11"/>`; }
+  for (let j = 1; j < rows; j++) { const y = j * P, wide = j === 4 ? 52 : 36; roads += `<rect x="0" y="${y - wide / 2}" width="${W}" height="${wide}"${j === 4 ? ' fill="#151b22"' : ""}/>`; dash += `<line x1="0" y1="${y}" x2="${W}" y2="${y}"${j === 4 ? ' stroke-width="4"' : ""}/>`; for (let k = 0; k < Math.ceil(W / 1200); k++) lab += `<text class="st" x="${300 + k * 1200}" y="${y + 5}">${hn[(j - 1) % hn.length]}</text>`; mini += `<rect x="0" y="${y - 10}" width="${W}" height="20" fill="#0a0d11"/>`; }
+  for (let i = 1; i < columns; i++) { const x = i * P, wide = i === 6 ? 52 : 36; roads += `<rect x="${x - wide / 2}" y="0" width="${wide}" height="${H}"${i === 6 ? ' fill="#151b22"' : ""}/>`; dash += `<line x1="${x}" y1="0" x2="${x}" y2="${H}"${i === 6 ? ' stroke-width="4"' : ""}/>`; for (let k = 0; k < Math.ceil(H / 1200); k++) lab += `<text class="st" transform="translate(${x + 5} ${300 + k * 1200}) rotate(90)">${i}${["TH", "ST", "ND", "RD"][i > 3 ? 0 : i % 4] || "TH"} ST</text>`; mini += `<rect x="${x - 10}" y="0" width="20" height="${H}" fill="#0a0d11"/>`; }
   roads += "</g>"; dash += "</g>";
-  [["SUBURBS", 450, 2050], ["DOWNTOWN", 1950, 1050], ["CITY PARK", 1350, 1450], ["BUSINESS DISTRICT", 3000, 620], ["INDUSTRIAL", 3300, 1800]].forEach(([t, x, y]) => (lab += `<text class="dist" x="${x}" y="${y}">${t}</text>`));
+  [["SUBURBS", 450, 2050], ["DOWNTOWN", 1950, 1050], ["CITY PARK", 1350, 1450], ["BUSINESS DISTRICT", 3000, 620], ["INDUSTRIAL", 3300, 1800], ["NEW BUSINESS PARK", 4800, 450], ["EASTSIDE BUSINESS PARK", 7800, 450]].forEach(([t, x, y]) => (lab += `<text class="dist" x="${x}" y="${y}">${t}</text>`));
   $("ground").innerHTML = ground + roads + dash; $("fillers").innerHTML = fill; $("labels").innerHTML = lab;
   $("border").innerHTML = `<rect class="limit" x="0" y="0" width="${W}" height="${H}"/><rect class="limit2" x="12" y="12" width="${W - 24}" height="${H - 24}"/>` + [[W / 2, 34], [W / 2, H - 22]].map(([x, y]) => `<text class="limtxt" x="${x}" y="${y}">CITY LIMIT</text>`).join("");
   drawPlaces();
   const cols = { supermarket: "#00ff66", carshop: "#ff3366", restaurant: "#ffbb00", hospital: "#ff3366", gasstation: "#e0b341" };
   Object.keys(BLOCK).forEach((id) => { const [x, y] = origin(id); mini += `<rect x="${x}" y="${y}" width="${BS}" height="${BS}" fill="${cols[id] || "#00ffcc"}"/>`; });
-  $("mini").innerHTML = mini + `<rect id="mv" fill="rgba(255,187,0,.12)" stroke="#ffbb00" stroke-width="14"/><circle id="mt" r="45" fill="#ffbb00" hidden/>`;
+  $("mini").setAttribute("viewBox", `0 0 ${W} ${H}`);
+  $("mini").innerHTML = mini + `<g id="miniBusinesses"></g><rect id="mv" fill="rgba(255,187,0,.12)" stroke="#ffbb00" stroke-width="14"/><circle id="mt" r="45" fill="#ffbb00" hidden/>`;
 })();
 
 // ---------- camera: drag, keys, wheel, minimap, hard city limits ----------
@@ -243,6 +297,7 @@ const typing = () => /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (tripAnimation && tripAnimation.mode === "drive") {
+    if (typing()) return;
     const control = ({ arrowleft: "left", a: "left", arrowright: "right", d: "right", arrowup: "accelerate", w: "accelerate", arrowdown: "brake", s: "brake" })[k];
     if (control) { driveControls.add(control); e.preventDefault(); }
   } else if (!typing()) {
@@ -277,7 +332,7 @@ const vehicleTypes = ["sedan", "van", "taxi", "truck", "bus"];
 const localHour = new Date().getHours();
 const trafficCount = [7, 8, 9, 16, 17, 18].includes(localHour) ? 54 : 30 + Math.floor(Math.random() * 13);
 for (let n = 0; n < trafficCount; n++) {
-  const horiz = n % 2 === 0, road = 1 + Math.floor(Math.random() * (horiz ? 7 : 11)), dir = Math.random() < .5 ? 1 : -1;
+  const horiz = n % 2 === 0, road = 1 + Math.floor(Math.random() * (horiz ? H / P - 1 : W / P - 1)), dir = Math.random() < .5 ? 1 : -1;
   traffic.push({
     horiz, road, dir, sp: 45 + Math.random() * 72, p: Math.random() * (horiz ? W : H),
     col: n % 9 === 0 ? "#00ffcc" : CC[n % 7], type: vehicleTypes[n % vehicleTypes.length], operator: n % 9 === 0,
@@ -309,23 +364,33 @@ function tick(now) {
   }
   if (tripAnimation) {
     const R = tripAnimation;
-    if (now - R.t0 >= 120000) R.progress = 1;
     if (R.mode === "drive") {
       const activeCar = cityState.cars.find((car) => car.id === cityState.current_car);
       const acceleration = activeCar?.acceleration || 0.8;
       const maxSpeed = 1.25 + (activeCar?.speed || 1) * 0.35;
-      if (driveControls.has("accelerate")) driveSpeed = Math.min(maxSpeed, driveSpeed + dt * acceleration);
-      else if (driveControls.has("brake")) driveSpeed = Math.max(0.08, driveSpeed - dt * 1.5);
-      else driveSpeed = Math.max(0.12, driveSpeed - dt * 0.05);
+      if (driveControls.has("accelerate")) {
+        driveStopped = false;
+        driveSpeed = Math.min(maxSpeed, driveSpeed + dt * acceleration);
+      } else if (driveControls.has("brake")) {
+        driveSpeed = Math.max(0, driveSpeed - dt * 1.5);
+        if (driveSpeed === 0) driveStopped = true;
+      }
+      if (driveSpeed > 0) driveResumeSpeed = driveSpeed;
       const steering = (driveControls.has("right") ? 1 : 0) - (driveControls.has("left") ? 1 : 0);
-      R.laneOffset = clamp(R.laneOffset + steering * dt * 44, -26, 26);
-      if (R.progress < 1) R.progress = clamp(R.progress + (dt * 1000 / R.dur) * driveSpeed, 0, 1);
+      const handling = activeCar?.handling || 0.8;
+      R.laneOffset = clamp(R.laneOffset + steering * dt * 55 * handling, -46, 46);
+      if (R.progress < 1 && !driveStopped) R.progress = clamp(R.progress + (dt * 1000 / R.dur) * driveSpeed, 0, 1);
       $("driveReadout").textContent = `SPEED ${Math.round(driveSpeed * 60)}  /  FUEL ${Math.round(activeCar?.fuel || 0)}%`;
       $("driveMeter").style.width = `${Math.round(R.progress * 100)}%`;
+      $("driveStop").textContent = driveStopped ? "RESUME" : "STOP CAR";
     } else {
       R.progress = clamp((now - R.t0) / R.dur, 0, 1);
     }
     const t = R.progress, path = $("route"), p = path.getPointAtLength(t * R.len), q = path.getPointAtLength(Math.min(t * R.len + 2, R.len));
+    const radians = Math.atan2(q.y - p.y, q.x - p.x);
+    const laneOffset = R.mode === "drive" ? R.laneOffset || 0 : 0;
+    const markerX = p.x - Math.sin(radians) * laneOffset;
+    const markerY = p.y + Math.cos(radians) * laneOffset;
     if (R.mode === "drive") {
       const turnAhead = R.turns.some((distance) => Math.abs(distance - t * R.len) < 55);
       if (turnAhead && driveSpeed > 1.15 && !driveControls.has("brake")) {
@@ -334,9 +399,9 @@ function tick(now) {
       } else if (turnAhead && driveControls.has("brake")) {
         driveScore = Math.min(1, driveScore + dt * 0.1);
       }
-      if (now - (R.lastTrafficCheck || 0) > 350) {
+      if (!driveStopped && driveSpeed > 0 && now - (R.lastTrafficCheck || 0) > 350) {
         R.lastTrafficCheck = now;
-        const closeCar = traffic.find((vehicle) => Math.hypot(vehicle.x - p.x, vehicle.y - p.y) < 20 + Math.abs(R.laneOffset || 0) * 0.15);
+        const closeCar = traffic.find((vehicle) => Math.hypot(vehicle.x - markerX, vehicle.y - markerY) < 22);
         if (closeCar) {
           if (driveControls.has("left") || driveControls.has("right") || driveSpeed < 0.9) {
             driveScore = Math.min(1, driveScore + 0.08);
@@ -360,10 +425,6 @@ function tick(now) {
       marker.style.setProperty("--vehicle-color", currentCar?.paint || "var(--pixel-cyan)");
       $("playerName").textContent = (currentCar?.driver_name || cityState.name || "DRIVER").slice(0, 12);
     }
-    const laneOffset = R.mode === "drive" ? R.laneOffset || 0 : 0;
-    const radians = angle * Math.PI / 180;
-    const markerX = p.x - Math.sin(radians) * laneOffset;
-    const markerY = p.y + Math.cos(radians) * laneOffset;
     marker.setAttribute("transform", `translate(${markerX} ${markerY}) rotate(${angle})`);
     const mt = $("mt"); mt.hidden = false; mt.setAttribute("cx", p.x); mt.setAttribute("cy", p.y);
     if (follow || R.mode === "drive") {
@@ -397,13 +458,18 @@ function tick(now) {
 resize(); flyTo(...centerOf("apartmentsA"), 0.9); anim.dur = 1; requestAnimationFrame(tick);
 
 // ---------- city services, travel, and daily needs ----------
-const escapeHTML = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-
 function updatePlayerMarker() {
   if (!cityState || !DOORS[cityState.location]) return;
   const [x, y] = DOORS[cityState.location];
   if (!tripAnimation) {
-    $("player").hidden = true;
+    const currentCar = cityState.cars?.find((car) => car.id === cityState.current_car);
+    const parkedCar = $("player");
+    parkedCar.hidden = !currentCar;
+    if (currentCar) {
+      parkedCar.style.setProperty("--vehicle-color", currentCar.paint || "var(--pixel-cyan)");
+      $("playerName").textContent = (currentCar.driver_name || cityState.name || "DRIVER").slice(0, 12);
+      parkedCar.setAttribute("transform", `translate(${x + 42} ${y + 22})`);
+    }
     const walker = $("walker");
     walker.hidden = false;
     walker.setAttribute("transform", `translate(${x} ${y})`);
@@ -426,6 +492,19 @@ function openPlace(id) {
   document.querySelectorAll(".hl").forEach((e) => e.classList.remove("hl"));
   $(id).classList.add("hl");
   status.textContent = `${NAMES[id]} · ${PLACE_INFO[id].kind}`;
+  const business = cityState?.businesses?.find((place) => place.id === id);
+  if (business) {
+    const stateText = business.status === "open" ? "OPEN FOR BUSINESS" : "UNDER CONSTRUCTION";
+    const hiringText = business.hiring
+      ? `<p class="ok">HIRING · ${escapeHTML(business.hiring_role)} · ${money(business.hiring_salary)}/week. Apply from the Career job board.</p>`
+      : "";
+    const routeButton = cityState.location === id
+      ? '<p class="ok">You are at this business.</p>'
+      : `<button class="btn warn" onclick="MapsGame.travelOptions('${id}')">PLAN TRIP HERE</button>`;
+    openWindow(escapeHTML(business.name).toUpperCase(),
+      `<h3>${escapeHTML(business.type)} · ${stateText}</h3><p>Operator: ${escapeHTML(business.owner)}</p>${hiringText}${routeButton}`);
+    return;
+  }
   if (cityState && cityState.location !== id) {
     openWindow(NAMES[id].toUpperCase(), `<h3>${PLACE_INFO[id].kind} DESTINATION</h3><p>${escapeHTML(NAMES[id])} · Choose a travel mode and see route time, traffic, and services on arrival.</p><button class="btn warn" onclick="MapsGame.travelOptions('${id}')">PLAN TRIP HERE</button>`);
     return;
@@ -476,6 +555,21 @@ function openFoodBag() {
   const rows = Object.entries(cityState.inventory || {}).filter(([, count]) => count > 0).map(([id, count]) =>
     `<div class="row"><span>${escapeHTML(food[id]?.name || id)} · ${count} · +${food[id]?.hunger || 0} hunger</span><button class="btn" onclick="MapsGame.eat('${id}')">EAT</button></div>`).join("");
   openWindow("FOOD BAG", `<h3>Hunger ${cityState.hunger}% · Health ${cityState.health} HP</h3>${rows || "<p>Your bag is empty. Visit FreshMart or Pixel Plate Diner.</p>"}<button class="btn" onclick="MapsGame.travelOptions('supermarket')">GO TO FRESHMART</button><div class="msg" id="serviceMsg"></div>`);
+}
+
+function openBusinessDirectory() {
+  const businesses = cityState?.businesses || [];
+  const rows = businesses.length ? businesses.map((business) => {
+    const statusText = business.status === "open" ? "OPEN" : "UNDER CONSTRUCTION";
+    const hiring = business.hiring
+      ? `<small class="hiring-tag">HIRING · ${escapeHTML(business.hiring_role)} · ${money(business.hiring_salary)}/week</small>`
+      : "";
+    const button = business.id === cityState.location
+      ? '<span class="ok">YOU ARE HERE</span>'
+      : `<button class="btn" onclick="MapsGame.travelOptions('${business.id}')">ROUTE THERE</button>`;
+    return `<div class="business-card"><b>${escapeHTML(business.name)}</b><span>${escapeHTML(business.type)} · ${statusText}</span><small>Owner: ${escapeHTML(business.owner)}</small>${hiring}${button}</div>`;
+  }).join("") : '<p>No player-owned businesses yet. Found one in the Career app to claim a city plot.</p>';
+  openWindow("CITY BUSINESS DIRECTORY", `<h3>Operator-owned places</h3><p>Businesses appear in the Eastside Business Park after their land is purchased. Construction completes in 1-2 in-game days.</p><div class="business-list">${rows}</div>`);
 }
 
 async function getQuotes(destination) {
@@ -538,6 +632,8 @@ async function startTrip(destination, mode) {
     closeWindow();
     driveScore = 0.72;
     driveSpeed = 1;
+    driveResumeSpeed = 1;
+    driveStopped = false;
     driveControls.clear();
     if (mode === "taxi") status.textContent = "Taxi dispatched · pickup in a few seconds.";
     else status.textContent = mode === "drive" ? "Driving · accelerate on clear roads, brake for turns." : "Walking · the city is passing by.";
@@ -551,10 +647,12 @@ async function startTrip(destination, mode) {
       const duration = Math.max(5, (trip.eta_seconds - delay / 1000) * 1000);
       tripAnimation = {
         mode, destination, t0: performance.now(), dur: duration,
-        len: route.getTotalLength(), progress: 0, traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points)
+        len: route.getTotalLength(), progress: 0, laneOffset: 0,
+        traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points)
       };
       $("driveHud").hidden = mode !== "drive";
       $("driveTitle").textContent = `${cityState.cars.find((car) => car.id === cityState.current_car)?.name || "CAR"} · ${NAMES[destination]}`;
+      $("driveStop").textContent = "STOP CAR";
       $("taxi").hidden = mode !== "taxi";
       $("player").hidden = mode !== "drive";
       $("walker").hidden = mode !== "walk";
@@ -600,8 +698,24 @@ function openTaxiRequest() {
 }
 
 $("taxiBtn").addEventListener("click", openTaxiRequest);
+$("businessesBtn").addEventListener("click", openBusinessDirectory);
 $("bagBtn").addEventListener("click", openFoodBag);
 $("orderFuelBtn").addEventListener("click", () => window.MapsGame.orderFuel(35));
+$("driveStop").addEventListener("click", () => {
+  if (!tripAnimation || tripAnimation.mode !== "drive") return;
+  driveStopped = !driveStopped;
+  if (driveStopped) {
+    driveResumeSpeed = Math.max(driveSpeed, 0.35);
+    driveSpeed = 0;
+    driveControls.clear();
+    document.querySelectorAll("[data-drive].active").forEach((button) => button.classList.remove("active"));
+    status.textContent = "Stopped. Press RESUME or accelerate when you are ready.";
+  } else {
+    driveSpeed = Math.max(driveResumeSpeed, 0.35);
+    status.textContent = "Driving resumed at your previous speed.";
+  }
+  $("driveStop").textContent = driveStopped ? "RESUME" : "STOP CAR";
+});
 const input = $("homeSearch"), results = $("results");
 function matchedPlaces(query) {
   return Object.entries(PLACE_INFO).filter(([id, place]) => `${id} ${place.name} ${place.kind} ${place.keywords}`.toLowerCase().includes(query));
@@ -630,6 +744,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".searchrow"))
 
 window.MapsGame = {
   travelOptions: (id) => travelWindow(id),
+  openBusinesses: openBusinessDirectory,
   startTrip,
   buyFood: async (item) => { try { await cityAction("buy_food", { item }); openSupermarket(); } catch (error) { showMessage($("serviceMsg"), error.message); } },
   eat: async (item) => { try { await cityAction("eat", { item }); openFoodBag(); } catch (error) { showMessage($("serviceMsg"), error.message); } },
@@ -668,7 +783,12 @@ requestState().then((data) => {
     const route = $("route");
     route.setAttribute("d", "M" + points.map((point) => point.join(" ")).join("L"));
     const mode = trip.mode;
-    tripAnimation = { mode, destination: trip.destination, t0: performance.now() - elapsed * 1000, dur: trip.eta_seconds * 1000, len: route.getTotalLength(), progress: elapsed / trip.eta_seconds, traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points) };
+    tripAnimation = { mode, destination: trip.destination, t0: performance.now() - elapsed * 1000, dur: trip.eta_seconds * 1000, len: route.getTotalLength(), progress: mode === "drive" ? 0 : elapsed / trip.eta_seconds, laneOffset: 0, traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points) };
+    driveSpeed = mode === "drive" ? 1 : 0;
+    driveResumeSpeed = 1;
+    driveStopped = false;
+    driveControls.clear();
+    if (mode === "drive") $("driveStop").textContent = "STOP CAR";
     $("driveHud").hidden = mode !== "drive";
     $("taxi").hidden = mode !== "taxi";
     $("player").hidden = mode !== "drive";

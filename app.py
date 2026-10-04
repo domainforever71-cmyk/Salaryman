@@ -1998,6 +1998,7 @@ def game_state():
     user = current_user()
     save = get_or_create_save(user)
     payload = save.to_dict()
+    payload["city_business"] = _business_profile(save)
     payload["stocks"] = STOCKS
     payload["clients"] = CLIENT_BOTS
     payload["day_tick_seconds"] = DAY_TICK_SECONDS
@@ -2240,10 +2241,14 @@ def _run_day_tick(user, save, events):
 
 
     if save.job_status == "business_owner":
-        headcount = len(save.employees())
-        revenue = round(random.uniform(40, 120) + headcount * random.uniform(60, 140), 2)
-        save.balance += revenue
-        save.add_profit(revenue)
+        business = _business_profile(save)
+        if not business or business["status"] == "open":
+            headcount = len(save.employees())
+            revenue = round(random.uniform(40, 120) + headcount * random.uniform(60, 140), 2)
+            save.balance += revenue
+            save.add_profit(revenue)
+        else:
+            events.append(f"{save.company_name} is under construction for {business['days_left']} more in-game day(s).")
     elif save.job_status != "employed_player":
         daily_salary = (save.salary or 0.0) / 7
         save.balance += daily_salary
@@ -2909,10 +2914,11 @@ def game_jobs():
     for gs in player_rows:
         owner = db.session.get(User, gs.user_id)
         headcount = GameSave.query.filter_by(employer_user_id=gs.user_id, job_status="employed_player").count()
+        business = _business_profile(gs) or {}
         listings.append({
             "id": f"player:{gs.id}", "name": gs.company_name or "Unnamed Company",
             "salary": gs.hiring_salary or 0.0, "target": gs.hiring_target or 0.0,
-            "blurb": f"Player-founded company. Role: {gs.hiring_role or 'Operator'}. "
+            "blurb": f"{business.get('type', 'Player-founded company')}. Role: {gs.hiring_role or 'Operator'}. "
                      f"{headcount} operator(s) currently on staff.",
             "founder": owner.username if owner else "?", "player_company": True,
             "credit_locked": False,
@@ -3025,6 +3031,9 @@ def game_company_set_listing():
     save = get_or_create_save(user)
     if save.job_status != "business_owner":
         return jsonify(success=False, msg="Found a business first - you need one to hire into.")
+    business = _business_profile(save)
+    if business and business["status"] != "open":
+        return jsonify(success=False, msg="Your company is still being built; you can hire once it opens.")
 
     if not data.get("open"):
         save.hiring_open = False
@@ -3070,7 +3079,7 @@ def game_company_roster():
         out.append({"username": owner.username if owner else "?", "role": s.job_title,
                      "salary": s.salary, "target": s.weekly_target,
                      "since_day": s.job_start_day})
-    return jsonify(success=True, staff=out, hiring_open=save.hiring_open,
+    return jsonify(success=True, staff=out, business=_business_profile(save), hiring_open=save.hiring_open,
                     hiring_role=save.hiring_role, hiring_salary=save.hiring_salary,
                     hiring_target=save.hiring_target or 0.0)
 
@@ -3094,43 +3103,6 @@ def game_quit_job():
     db.session.commit()
     log_event(f"{user.username} left {old or 'their position'}.")
     return jsonify(success=True)
-
-
-BUSINESS_STARTUP_COST = 20000.0
-
-
-@app.route("/api/game/start_business", methods=["POST"])
-@login_required
-def game_start_business():
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()[:64]
-    if not name:
-        return jsonify(success=False, msg="Name your business first.")
-
-    user = current_user()
-    save = get_or_create_save(user)
-    if save.balance < BUSINESS_STARTUP_COST:
-        return jsonify(success=False, msg=f"Insufficient funds - need ${BUSINESS_STARTUP_COST:,.0f} to start a business.")
-
-    save.balance -= BUSINESS_STARTUP_COST
-    save.business_capital = BUSINESS_STARTUP_COST
-    save.business_started_day = save.day
-    save.job_status = "business_owner"
-    save.job_title = f"Founder & CEO, {name}"
-    save.company_name = name
-    save.salary = 0.0
-    save.weekly_target = 0.0
-    save.weekly_commission = 0.0
-    save.boss_mood = 100
-    save.applied_firm = None
-    save.employer_user_id = None
-    save.hiring_open = False
-    save.hiring_role = None
-    save.hiring_target = 0.0
-    award_credits(user, "business", commit=False)
-    db.session.commit()
-    log_event(f"{user.username} founded {name} with ${BUSINESS_STARTUP_COST:,.0f} in startup capital.")
-    return jsonify(success=True, name=name)
 
 
 @app.route("/api/game/profit_report")
@@ -3222,7 +3194,7 @@ def _apply_employee_benefits(save):
 def game_employee_candidates():
     save = get_or_create_save(current_user())
     existing = {e["name"] for e in save.employees() if e.get("name")}
-    cands = generate_employee_candidates(count=4, exclude_names=existing)
+    cands = generate_employee_candidates(count=8, exclude_names=existing)
     return jsonify(success=True, candidates=cands, roster=save.employees(),
                     weekly_bills=save.weekly_bills, balance=save.balance)
 
@@ -3234,8 +3206,8 @@ def game_hire_named_employee():
     user = current_user()
     save = get_or_create_save(user)
     employees = save.employees()
-    if len(employees) >= 12:
-        return jsonify(success=False, msg="Staff roster is full (max 12). Fire someone first.")
+    if len(employees) >= 30:
+        return jsonify(success=False, msg="Staff roster is full (max 30). Fire someone first.")
     name = (data.get("name") or "").strip()[:64]
     role = (data.get("role") or "Staff")[:64]
     try:
@@ -4826,8 +4798,9 @@ def coop_poll():
 from world import init_world
 import world
 from economy import init_economy, cpi
-from city_travel import init_city
-init_city(app, login_required, current_user, get_or_create_save)
+from city_travel import business_profile as _business_profile, init_city
+init_city(app, login_required, current_user, get_or_create_save,
+          award_credits=award_credits, log_event=log_event)
 init_world(app, login_required, admin_required, current_user, get_or_create_save,
            market_state, price_index=cpi)
 init_economy(app, login_required, current_user, get_or_create_save,

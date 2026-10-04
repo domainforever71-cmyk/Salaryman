@@ -52,12 +52,11 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
 
     with app.app_context():
         save = get_save(user)
-        save.city_state_json = json.dumps({
-            "location": "supermarket", "inventory": {}, "owned_cars": [],
-            "current_car": None, "driving_skill": 0, "active_trip": None,
-        })
+        state = json.loads(save.city_state_json)
+        state.update(location="supermarket", active_trip=None)
         save.hunger = 50
         save.health = 70
+        save.city_state_json = json.dumps(state)
         db.session.commit()
 
     bought = client.post("/api/game/city/action", json={"action": "buy_food", "item": "bread"}).get_json()
@@ -65,6 +64,69 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
     assert bought["balance"] == 1996
     eaten = client.post("/api/game/city/action", json={"action": "eat", "item": "bread"}).get_json()
     assert eaten["hunger"] == 68 and eaten["health"] == 71
+
+    with app.app_context():
+        save = get_save(user)
+        save.balance = 300000
+        db.session.commit()
+    company = client.post(
+        "/api/game/start_business",
+        json={"name": "Night Shift Motors", "type": "Car Dealership"},
+    ).get_json()
+    assert company["success"]
+    assert company["land_cost"] == 10000 and company["startup_cost"] == 250000
+    assert company["balance"] == 40000
+    assert company["build_days"] in (1, 2)
+
+    with app.app_context():
+        other_owner = User(username="OtherOperator", password_hash="test-hash")
+        db.session.add(other_owner)
+        db.session.flush()
+        db.session.add(GameSave(
+            user_id=other_owner.id, active=True, name="OtherOperator", balance=0,
+            job_status="business_owner", company_name="Harbor Repair",
+            business_started_day=1, day=1,
+            city_state_json=json.dumps({
+                "location": "apartmentsA",
+                "business": {"type": "Repair Shop", "ready_day": 1},
+            }),
+        ))
+        db.session.commit()
+
+    city_state = client.get("/api/game/city/state").get_json()
+    business = next(place for place in city_state["businesses"] if place["name"] == "Night Shift Motors")
+    assert business["name"] == "Night Shift Motors"
+    assert business["type"] == "Car Dealership"
+    assert business["status"] == "building"
+    assert business["x"] >= 12
+    other_business = next(place for place in city_state["businesses"] if place["name"] == "Harbor Repair")
+    assert other_business["owner"] == "OtherOperator"
+    assert other_business["status"] == "open"
+    assert (other_business["x"], other_business["y"]) != (business["x"], business["y"])
+    business_quotes = client.get(
+        f"/api/game/city/quotes?destination={business['id']}"
+    ).get_json()["quotes"]
+    assert business_quotes["walk"]["available"]
+    assert business_quotes["drive"]["available"] is False
+
+    business_trip = client.post(
+        "/api/game/city/action",
+        json={"action": "travel", "destination": business["id"], "mode": "walk"},
+    ).get_json()
+    assert business_trip["active_trip"]["destination"] == business["id"]
+    with app.app_context():
+        save = get_save(user)
+        save.day = company["ready_day"]
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["min_arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    arrived_at_business = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive"},
+    ).get_json()
+    assert arrived_at_business["location"] == business["id"]
+    assert arrived_at_business["businesses"][0]["status"] == "open"
 
     with app.app_context():
         save = get_save(user)
