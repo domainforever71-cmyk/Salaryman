@@ -208,11 +208,16 @@ let anim = null, follow = false;
 function flyTo(wx, wy, s, done) { anim = { t0: performance.now(), dur: 750, fx: cam.x + cw / 2 / cam.s, fy: cam.y + ch / 2 / cam.s, fs: cam.s, tx: wx, ty: wy, ts: clamp(s, minS, MAXS), done }; follow = false; }
 $("zIn").onclick = () => zoomAt(cw / 2, ch / 2, cam.s * 1.3);
 $("zOut").onclick = () => zoomAt(cw / 2, ch / 2, cam.s / 1.3);
-$("zHome").onclick = () => flyTo(1050, 750, 0.9);
+$("zHome").onclick = () => {
+  if (tripAnimation?.mode === "drive") return;
+  flyTo(...centerOf(cityState?.location || "apartmentsA"), 0.9);
+};
+
+function isForcedDriving() { return Boolean(tripAnimation && tripAnimation.mode === "drive"); }
 
 // drag to move
 let drag = null, moved = false;
-svg.addEventListener("pointerdown", (e) => { if (e.button) return; drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y }; moved = false; anim = null; follow = false; });
+svg.addEventListener("pointerdown", (e) => { if (e.button || isForcedDriving()) return; drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y }; moved = false; anim = null; follow = false; });
 window.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -221,14 +226,14 @@ window.addEventListener("pointermove", (e) => {
 });
 window.addEventListener("pointerup", () => { drag = null; svg.classList.remove("grabbing"); });
 svg.addEventListener("click", (e) => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
-svg.addEventListener("wheel", (e) => { e.preventDefault(); const b = svg.getBoundingClientRect(); zoomAt(e.clientX - b.left, e.clientY - b.top, cam.s * Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
+svg.addEventListener("wheel", (e) => { e.preventDefault(); if (isForcedDriving()) return; const b = svg.getBoundingClientRect(); zoomAt(e.clientX - b.left, e.clientY - b.top, cam.s * Math.exp(-e.deltaY * 0.0015)); }, { passive: false });
 svg.addEventListener("mousemove", (e) => {
   if (e.target.closest(".place") || drag) return;
   const b = svg.getBoundingClientRect(); status.textContent = `Grid X:${Math.round(cam.x + (e.clientX - b.left) / cam.s)} Y:${Math.round(cam.y + (e.clientY - b.top) / cam.s)}`;
 });
 // minimap: click or drag to jump
 let mdrag = false;
-const jump = (e) => { const b = $("mini").getBoundingClientRect(); cam.x = ((e.clientX - b.left) / b.width) * W - cw / 2 / cam.s; cam.y = ((e.clientY - b.top) / b.height) * H - ch / 2 / cam.s; anim = null; follow = false; view(false); };
+const jump = (e) => { if (isForcedDriving()) return; const b = $("mini").getBoundingClientRect(); cam.x = ((e.clientX - b.left) / b.width) * W - cw / 2 / cam.s; cam.y = ((e.clientY - b.top) / b.height) * H - ch / 2 / cam.s; anim = null; follow = false; view(false); };
 $("mini").addEventListener("pointerdown", (e) => { mdrag = true; jump(e); });
 window.addEventListener("pointermove", (e) => { if (mdrag) jump(e); });
 window.addEventListener("pointerup", () => (mdrag = false));
@@ -245,14 +250,25 @@ window.addEventListener("keydown", (e) => {
     if (k === "0" || k === "home") $("zHome").click();
   }
 });
-window.addEventListener("keyup", (e) => { keys.delete(e.key.toLowerCase()); driveControls.clear(); });
+window.addEventListener("keyup", (e) => {
+  const k = e.key.toLowerCase();
+  keys.delete(k);
+  const control = ({ arrowleft: "left", a: "left", arrowright: "right", d: "right", arrowup: "accelerate", w: "accelerate", arrowdown: "brake", s: "brake" })[k];
+  if (control) driveControls.delete(control);
+});
 window.addEventListener("blur", () => { keys.clear(); driveControls.clear(); });
 document.querySelectorAll("[data-drive]").forEach((button) => {
   const control = button.dataset.drive;
-  button.addEventListener("pointerdown", () => { driveControls.add(control); button.classList.add("active"); });
+  button.addEventListener("pointerdown", (event) => { event.preventDefault(); driveControls.add(control); button.classList.add("active"); });
   ["pointerup", "pointerleave", "pointercancel"].forEach((name) => button.addEventListener(name, () => {
     driveControls.delete(control); button.classList.remove("active");
   }));
+});
+window.addEventListener("pointerup", () => {
+  document.querySelectorAll("[data-drive].active").forEach((button) => {
+    driveControls.delete(button.dataset.drive);
+    button.classList.remove("active");
+  });
 });
 
 // ---------- ambient traffic ----------
@@ -293,16 +309,19 @@ function tick(now) {
   }
   if (tripAnimation) {
     const R = tripAnimation;
+    if (now - R.t0 >= 120000) R.progress = 1;
     if (R.mode === "drive") {
       const activeCar = cityState.cars.find((car) => car.id === cityState.current_car);
-      if (driveControls.has("accelerate")) driveSpeed = Math.min(1.5, driveSpeed + dt * (activeCar?.acceleration || 0.8));
-      else if (driveControls.has("brake")) driveSpeed = Math.max(0.5, driveSpeed - dt * 1.4);
-      else driveSpeed += (1 - driveSpeed) * Math.min(1, dt * 0.35);
-      const effectiveDuration = Math.min(120000, R.dur / driveSpeed);
-      const progress = clamp((now - R.t0) / effectiveDuration, 0, 1);
-      $("driveReadout").textContent = `SPEED ${Math.round(driveSpeed * 60)}  /  TRAFFIC ${R.traffic.toUpperCase()}`;
-      $("driveMeter").style.width = `${Math.round(progress * 100)}%`;
-      R.progress = progress;
+      const acceleration = activeCar?.acceleration || 0.8;
+      const maxSpeed = 1.25 + (activeCar?.speed || 1) * 0.35;
+      if (driveControls.has("accelerate")) driveSpeed = Math.min(maxSpeed, driveSpeed + dt * acceleration);
+      else if (driveControls.has("brake")) driveSpeed = Math.max(0.08, driveSpeed - dt * 1.5);
+      else driveSpeed = Math.max(0.12, driveSpeed - dt * 0.05);
+      const steering = (driveControls.has("right") ? 1 : 0) - (driveControls.has("left") ? 1 : 0);
+      R.laneOffset = clamp(R.laneOffset + steering * dt * 44, -26, 26);
+      if (R.progress < 1) R.progress = clamp(R.progress + (dt * 1000 / R.dur) * driveSpeed, 0, 1);
+      $("driveReadout").textContent = `SPEED ${Math.round(driveSpeed * 60)}  /  FUEL ${Math.round(activeCar?.fuel || 0)}%`;
+      $("driveMeter").style.width = `${Math.round(R.progress * 100)}%`;
     } else {
       R.progress = clamp((now - R.t0) / R.dur, 0, 1);
     }
@@ -317,32 +336,47 @@ function tick(now) {
       }
       if (now - (R.lastTrafficCheck || 0) > 350) {
         R.lastTrafficCheck = now;
-        const closeCar = traffic.find((vehicle) => Math.hypot(vehicle.x - p.x, vehicle.y - p.y) < 26);
+        const closeCar = traffic.find((vehicle) => Math.hypot(vehicle.x - p.x, vehicle.y - p.y) < 20 + Math.abs(R.laneOffset || 0) * 0.15);
         if (closeCar) {
           if (driveControls.has("left") || driveControls.has("right") || driveSpeed < 0.9) {
             driveScore = Math.min(1, driveScore + 0.08);
             status.textContent = `${closeCar.operator ? "Operator car" : closeCar.type} passed · nice control.`;
           } else {
             driveScore = Math.max(0, driveScore - 0.14);
+            driveSpeed = Math.max(0.25, driveSpeed * 0.72);
             status.textContent = "Traffic close · steer around it or slow down.";
           }
         }
       }
     }
     const angle = (Math.atan2(q.y - p.y, q.x - p.x) * 180) / Math.PI;
-      const marker = R.mode === "taxi" ? $("taxi") : R.mode === "walk" ? $("walker") : $("player");
+    const marker = R.mode === "taxi" ? $("taxi") : R.mode === "walk" ? $("walker") : $("player");
     marker.hidden = false;
-      $("taxi").hidden = R.mode !== "taxi";
-      $("player").hidden = R.mode !== "drive";
-      $("walker").hidden = R.mode !== "walk";
-      if (R.mode === "drive") {
-        const currentCar = (cityState.cars || []).find((car) => car.id === cityState.current_car);
-        marker.style.setProperty("--vehicle-color", currentCar?.paint || "var(--pixel-cyan)");
-      }
-    const steerOffset = R.mode === "drive" ? (driveControls.has("left") ? -11 : driveControls.has("right") ? 11 : 0) : 0;
-    marker.setAttribute("transform", `translate(${p.x + steerOffset} ${p.y}) rotate(${angle})`);
+    $("taxi").hidden = R.mode !== "taxi";
+    $("player").hidden = R.mode !== "drive";
+    $("walker").hidden = R.mode !== "walk";
+    if (R.mode === "drive") {
+      const currentCar = cityState.cars.find((car) => car.id === cityState.current_car);
+      marker.style.setProperty("--vehicle-color", currentCar?.paint || "var(--pixel-cyan)");
+      $("playerName").textContent = (currentCar?.driver_name || cityState.name || "DRIVER").slice(0, 12);
+    }
+    const laneOffset = R.mode === "drive" ? R.laneOffset || 0 : 0;
+    const radians = angle * Math.PI / 180;
+    const markerX = p.x - Math.sin(radians) * laneOffset;
+    const markerY = p.y + Math.cos(radians) * laneOffset;
+    marker.setAttribute("transform", `translate(${markerX} ${markerY}) rotate(${angle})`);
     const mt = $("mt"); mt.hidden = false; mt.setAttribute("cx", p.x); mt.setAttribute("cy", p.y);
-    if (follow) { cam.x += (p.x - cw / 2 / cam.s - cam.x) * Math.min(1, dt * 4); cam.y += (p.y - ch / 2 / cam.s - cam.y) * Math.min(1, dt * 4); view(false); }
+    if (follow || R.mode === "drive") {
+      if (R.mode === "drive") {
+        cam.s = clamp(Math.max(minS, 1.08), minS, MAXS);
+        cam.x = markerX - cw / 2 / cam.s;
+        cam.y = markerY - ch / 2 / cam.s;
+      } else {
+        cam.x += (p.x - cw / 2 / cam.s - cam.x) * Math.min(1, dt * 4);
+        cam.y += (p.y - ch / 2 / cam.s - cam.y) * Math.min(1, dt * 4);
+      }
+      view(false);
+    }
     if (t >= 1 && !R.finishing) { R.finishing = true; finishTrip(); }
   }
   traffic.forEach((c, k) => {
@@ -385,9 +419,17 @@ function serviceMessage() {
 
 function openPlace(id) {
   if (!PLACE_INFO[id]) return;
+  if (tripAnimation) {
+    status.textContent = `En route to ${NAMES[tripAnimation.destination]}. Finish this trip before planning another.`;
+    return;
+  }
   document.querySelectorAll(".hl").forEach((e) => e.classList.remove("hl"));
   $(id).classList.add("hl");
   status.textContent = `${NAMES[id]} · ${PLACE_INFO[id].kind}`;
+  if (cityState && cityState.location !== id) {
+    openWindow(NAMES[id].toUpperCase(), `<h3>${PLACE_INFO[id].kind} DESTINATION</h3><p>${escapeHTML(NAMES[id])} · Choose a travel mode and see route time, traffic, and services on arrival.</p><button class="btn warn" onclick="MapsGame.travelOptions('${id}')">PLAN TRIP HERE</button>`);
+    return;
+  }
   if (id === "supermarket") return openSupermarket();
   if (id === "carshop") return openCarShop();
   if (id === "gasstation") return openFuelStop();
@@ -413,12 +455,12 @@ function openCarShop() {
     return `<div class="car-card"><b><i class="paint" style="background:${car.paint}"></i>${escapeHTML(car.name)}</b><span>${escapeHTML(car.class)} · $${car.price.toLocaleString()}</span><small>Speed ${car.speed.toFixed(2)} · acceleration ${car.acceleration.toFixed(2)} · handling ${car.handling.toFixed(2)} · economy ${car.efficiency.toFixed(2)}</small><button class="btn" onclick="MapsGame.${own ? "selectCar" : "buyCar"}('${id}')">${own ? (cityState.current_car === id ? "IN USE" : "SELECT") : "BUY CAR"}</button></div>`;
   }).join("");
   const fuel = (cityState.cars || []).find((car) => car.id === cityState.current_car)?.fuel;
-  openWindow("METRO MOTORS", `<h3>Pick your ride</h3><p>Your car affects travel speed, handling and fuel. A basic car is enough to get around.</p>${serviceMessage()}<div class="car-list">${rows}</div><div class="msg" id="serviceMsg"></div>`);
+  openWindow("METRO MOTORS", `<h3>Pick your ride</h3><p>Your car affects travel speed, handling and fuel. A basic car is enough to get around.</p>${fuel == null ? "" : `<p>Current car fuel: ${Math.round(fuel)}%</p><button class="btn" onclick="MapsGame.orderFuel(35)">ORDER FUEL DELIVERY</button>`}${serviceMessage()}<div class="car-list">${rows}</div><div class="msg" id="serviceMsg"></div>`);
 }
 
 function openFuelStop() {
   const fuel = (cityState.cars || []).find((car) => car.id === cityState.current_car)?.fuel;
-  openWindow("HIGHWAY FUEL", `<h3>Fuel stop</h3><p>Current vehicle fuel: ${fuel == null ? "No car selected" : `${Math.round(fuel)}%`}.</p><p>Refill 35% for $15.</p>${serviceMessage()}<button class="btn warn" onclick="MapsGame.refuel()">BUY FUEL</button><div class="msg" id="serviceMsg"></div>`);
+  openWindow("HIGHWAY FUEL", `<h3>Fuel stop</h3><p>Current vehicle fuel: ${fuel == null ? "No car selected" : `${Math.round(fuel)}%`}.</p><p>Refill 35% for $15, or order a 35% delivery anywhere for $36.50.</p>${serviceMessage()}<button class="btn warn" onclick="MapsGame.refuel()">REFILL HERE · $15</button><button class="btn" onclick="MapsGame.orderFuel(35)">ORDER FUEL · $36.50</button><div class="msg" id="serviceMsg"></div>`);
 }
 
 function openDiner() {
@@ -454,8 +496,12 @@ async function travelWindow(destination, taxiOnly = false) {
     const cards = selected.map((mode) => {
       const quote = data.quotes[mode];
       const labels = { walk: "WALK", drive: "DRIVE YOUR CAR", taxi: "TAKE A TAXI" };
-      if (!quote.available) return `<div class="travel-card unavailable"><b>${labels[mode]}</b><p>${escapeHTML(quote.reason)}</p></div>`;
-      return `<div class="travel-card"><b>${labels[mode]}</b><span>${quote.eta_seconds}s · ${quote.distance_km} km</span><small>${quote.traffic} traffic${quote.highway ? " · highway" : ""}${quote.event ? " · road delay possible" : ""}</small><strong>${quote.price ? money(quote.price) : "FREE"}</strong><button class="btn ${mode === "taxi" ? "warn" : ""}" onclick="MapsGame.startTrip('${destination}','${mode}')">${mode === "taxi" ? "CALL TAXI" : mode === "drive" ? "START DRIVE" : "START WALK"}</button></div>`;
+      const fuelInfo = mode === "drive" && quote.fuel_needed != null
+        ? `<small>Fuel needed: ${quote.fuel_needed}% · tank: ${quote.current_fuel}%</small>` : "";
+      const fuelAction = mode === "drive" && quote.delivery_percent
+        ? `<button class="btn" onclick="MapsGame.orderFuel(${quote.delivery_percent},'${destination}')">ORDER ${quote.delivery_percent}% FUEL</button>` : "";
+      if (!quote.available) return `<div class="travel-card unavailable"><b>${labels[mode]}</b><p>${escapeHTML(quote.reason)}</p>${fuelInfo}${fuelAction}</div>`;
+      return `<div class="travel-card"><b>${labels[mode]}</b><span>${quote.eta_seconds}s · ${quote.distance_km} km</span><small>${quote.traffic} traffic${quote.highway ? " · highway" : ""}${quote.event ? " · road delay possible" : ""}</small>${fuelInfo}<strong>${quote.price ? money(quote.price) : "FREE"}</strong><button class="btn ${mode === "taxi" ? "warn" : ""}" onclick="MapsGame.startTrip('${destination}','${mode}')">${mode === "taxi" ? "CALL TAXI" : mode === "drive" ? "START DRIVE" : "START WALK"}</button></div>`;
     }).join("");
     const current = NAMES[cityState.location] || "Current location";
     openWindow(taxiOnly ? "CALL A TAXI" : `TRAVEL TO ${NAMES[destination].toUpperCase()}`, `<h3>${escapeHTML(current)} → ${escapeHTML(data.name)}</h3><p>Choose your route. Time includes distance, traffic and road conditions.</p><div class="travel-options">${cards}</div><div class="msg" id="serviceMsg"></div>`);
@@ -513,7 +559,7 @@ async function startTrip(destination, mode) {
       $("player").hidden = mode !== "drive";
       $("walker").hidden = mode !== "walk";
       anim = null;
-      if (mode === "drive") flyTo((points[0][0] + points[1][0]) / 2, points[0][1], 1.05);
+      if (mode === "drive") cam.s = clamp(Math.max(minS, 1.08), minS, MAXS);
       follow = true;
     }, delay);
   } catch (error) {
@@ -555,6 +601,7 @@ function openTaxiRequest() {
 
 $("taxiBtn").addEventListener("click", openTaxiRequest);
 $("bagBtn").addEventListener("click", openFoodBag);
+$("orderFuelBtn").addEventListener("click", () => window.MapsGame.orderFuel(35));
 const input = $("homeSearch"), results = $("results");
 function matchedPlaces(query) {
   return Object.entries(PLACE_INFO).filter(([id, place]) => `${id} ${place.name} ${place.kind} ${place.keywords}`.toLowerCase().includes(query));
@@ -591,6 +638,23 @@ window.MapsGame = {
   buyCar: async (car) => { try { await cityAction("buy_car", { car }); openCarShop(); } catch (error) { showMessage($("serviceMsg"), error.message); } },
   selectCar: async (car) => { try { await cityAction("select_car", { car }); openCarShop(); } catch (error) { showMessage($("serviceMsg"), error.message); } },
   refuel: async () => { try { await cityAction("refuel"); openFuelStop(); } catch (error) { showMessage($("serviceMsg"), error.message); } },
+  orderFuel: async (amount, destination) => {
+    try {
+      const currentCar = cityState.cars.find((car) => car.id === cityState.current_car);
+      if (!currentCar) throw new Error("Buy a car before ordering fuel.");
+      const deliveryAmount = Math.min(Number(amount) || 35, 100 - currentCar.fuel);
+      if (deliveryAmount < 1) throw new Error("Your fuel tank is already full.");
+      await cityAction("order_fuel", { amount: deliveryAmount });
+      if (destination) await travelWindow(destination);
+      else if (cityState.location === "carshop") openCarShop();
+      else if (cityState.location === "gasstation") openFuelStop();
+      else openWindow("FUEL DELIVERY", `<h3>Fuel delivered</h3><p>${deliveryAmount}% added to your ${escapeHTML(currentCar.name)}. Tank: ${Math.round(cityState.cars.find((car) => car.id === cityState.current_car)?.fuel || 0)}%.</p>`);
+    } catch (error) {
+      const message = $("serviceMsg");
+      if (message) showMessage(message, error.message);
+      else status.textContent = error.message;
+    }
+  },
   taxiDestination: () => travelWindow($("taxiDestination").value, true)
 };
 

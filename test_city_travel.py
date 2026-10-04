@@ -79,13 +79,26 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
     assert bought_car["current_car"] == "sedan"
     assert bought_car["balance"] == 1800
     assert bought_car["cars"][0]["fuel"] == 100
+    assert bought_car["cars"][0]["paint"].startswith("#")
+    assert bought_car["cars"][0]["driver_name"] == "CityTester"
 
     with app.app_context():
         save = get_save(user)
         state = json.loads(save.city_state_json)
         state.update(location="apartmentsA", active_trip=None)
+        state["owned_cars"][0]["fuel"] = 4
         save.city_state_json = json.dumps(state)
         db.session.commit()
+
+    low_fuel = client.get("/api/game/city/quotes?destination=suburban_house").get_json()["quotes"]["drive"]
+    assert not low_fuel["available"]
+    assert low_fuel["fuel_needed"] > low_fuel["current_fuel"]
+    assert low_fuel["delivery_percent"] > 0
+    delivered = client.post(
+        "/api/game/city/action",
+        json={"action": "order_fuel", "amount": low_fuel["delivery_percent"]},
+    ).get_json()
+    assert delivered["cars"][0]["fuel"] >= low_fuel["fuel_needed"]
 
     long_trip = client.get("/api/game/city/quotes?destination=suburban_house").get_json()["quotes"]
     assert long_trip["walk"]["eta_seconds"] > 60
@@ -96,7 +109,35 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
         json={"action": "travel", "destination": "suburban_house", "mode": "drive"},
     ).get_json()
     assert started["active_trip"]["mode"] == "drive"
+    assert started["active_trip"]["driver_name"] == "CityTester"
     assert started["cars"][0]["fuel"] < 100
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    driving_state = client.get("/api/game/city/state").get_json()
+    assert driving_state["location"] == "apartmentsA"
+    assert driving_state["active_trip"]["mode"] == "drive"
+
+    early_arrival = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive", "drive_score": 1},
+    )
+    assert early_arrival.status_code == 409
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["min_arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    arrived_by_car = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive", "drive_score": 1},
+    ).get_json()
+    assert arrived_by_car["location"] == "suburban_house"
+    assert arrived_by_car["active_trip"] is None
 
     with app.app_context():
         save = get_save(user)
@@ -104,11 +145,12 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
         state.update(location="apartmentsA", active_trip=None)
         save.city_state_json = json.dumps(state)
         db.session.commit()
+    balance_before_taxi = client.get("/api/game/city/state").get_json()["balance"]
     taxi = client.post(
         "/api/game/city/action",
         json={"action": "travel", "destination": "supermarket", "mode": "taxi"},
     ).get_json()
-    assert taxi["balance"] == 1800
+    assert taxi["balance"] == balance_before_taxi
     fare = taxi["active_trip"]["price"]
     with app.app_context():
         save = get_save(user)
@@ -118,7 +160,7 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
         db.session.commit()
     arrived = client.get("/api/game/city/state").get_json()
     assert arrived["location"] == "supermarket"
-    assert arrived["balance"] == round(1800 - fare, 2)
+    assert arrived["balance"] == round(balance_before_taxi - fare, 2)
 
 
 if __name__ == "__main__":

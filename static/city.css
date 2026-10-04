@@ -78,6 +78,7 @@ button { font-family: inherit; cursor: pointer; }
 .route { fill: none; stroke: var(--pixel-yellow); stroke-width: 3; stroke-dasharray: 8 8; opacity: .9; }
 #taxi rect:first-child { fill: var(--pixel-yellow); stroke: #000; filter: drop-shadow(0 0 8px var(--pixel-yellow)); }
 #player rect:first-child { fill: var(--vehicle-color, var(--pixel-cyan)); stroke: #000; filter: drop-shadow(0 0 8px var(--vehicle-color, var(--pixel-cyan))); }
+#player text { fill: #fff; font: 8px var(--font-current); paint-order: stroke; stroke: #000; stroke-width: 2px; }
 .walker circle { fill: var(--pixel-green); stroke: #000; stroke-width: 2; }
 .walker path { fill: none; stroke: var(--pixel-green); stroke-width: 4; stroke-linecap: square; }
 .tc.operator { filter: drop-shadow(0 0 5px var(--pixel-cyan)); }

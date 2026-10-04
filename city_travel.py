@@ -1,6 +1,7 @@
 """Account-backed city travel and daily-needs routes."""
 
 import json
+import math
 import random
 import time
 
@@ -41,6 +42,9 @@ CARS = {
     "luxury": {"name": "Grand Avenue", "price": 28500, "speed": 1.08, "acceleration": 0.94, "handling": 1.2, "efficiency": 0.92, "class": "Luxury", "paint": "#222b37"},
     "supercar": {"name": "Comet GT", "price": 58000, "speed": 1.3, "acceleration": 1.28, "handling": 1.14, "efficiency": 0.62, "class": "Performance", "paint": "#a35dd1"},
 }
+CAR_PAINTS = ["#e0b341", "#3d78c9", "#d9d9d9", "#c2423f", "#8a5bd6", "#00ffcc", "#ff3366"]
+FUEL_DELIVERY_FEE = 12
+FUEL_PRICE_PER_PERCENT = 0.7
 
 START_STATE = {
     "location": "apartmentsA",
@@ -131,7 +135,13 @@ def _quote(state, destination, mode):
             return {"mode": mode, "available": False, "reason": "Visit Metro Motors to buy a car."}
         fuel_needed = blocks * 1.5 * spec["efficiency"]
         if state_car.get("fuel", 0) < fuel_needed:
-            return {"mode": mode, "available": False, "reason": "Not enough fuel. Visit Highway Fuel."}
+            return {
+                "mode": mode, "available": False,
+                "reason": "Order fuel or visit Highway Fuel.",
+                "fuel_needed": round(fuel_needed, 1),
+                "current_fuel": round(state_car.get("fuel", 0), 1),
+                "delivery_percent": round(min(100 - state_car.get("fuel", 0), fuel_needed - state_car.get("fuel", 0) + 5), 1),
+            }
         skill = state["driving_skill"] / 100
         duration = blocks * 7.2 * traffic * event * (0.88 if highway else 1) / spec["speed"]
         duration *= 1 - skill * 0.18
@@ -152,6 +162,8 @@ def _quote(state, destination, mode):
         "traffic": "heavy" if traffic >= 1.28 else "busy" if traffic >= 1.1 else "light",
         "highway": highway,
         "event": event > 1.05,
+        "fuel_needed": round(blocks * 1.5 * spec["efficiency"], 1) if mode == "drive" and spec else 0,
+        "current_fuel": round(state_car.get("fuel", 0), 1) if mode == "drive" and state_car else 0,
     }
 
 
@@ -169,7 +181,8 @@ def init_city(app, login_required, current_user, get_or_create_save):
     def city_state():
         save = get_or_create_save(current_user())
         state = _state(save)
-        if state["active_trip"] and time.time() >= state["active_trip"].get("arrive_after", 0):
+        if (state["active_trip"] and state["active_trip"].get("mode") == "taxi"
+                and time.time() >= state["active_trip"].get("arrive_after", 0)):
             trip = state["active_trip"]
             if trip.get("mode") == "taxi":
                 save.balance = round(max(0, save.balance - trip.get("price", 0)), 2)
@@ -258,7 +271,12 @@ def init_city(app, login_required, current_user, get_or_create_save):
             if save.balance < spec["price"]:
                 return jsonify(success=False, msg="You can't afford this car yet."), 400
             save.balance = round(save.balance - spec["price"], 2)
-            state["owned_cars"].append({"id": car_id, "fuel": 100})
+            state["owned_cars"].append({
+                "id": car_id,
+                "fuel": 100,
+                "paint": random.choice(CAR_PAINTS),
+                "driver_name": save.name,
+            })
             state["current_car"] = car_id
         elif action == "select_car":
             car_id = data.get("car")
@@ -276,6 +294,24 @@ def init_city(app, login_required, current_user, get_or_create_save):
                 return jsonify(success=False, msg="You need $15 to refuel."), 400
             save.balance = round(save.balance - price, 2)
             car["fuel"] = min(100, car.get("fuel", 0) + 35)
+        elif action == "order_fuel":
+            if state["active_trip"]:
+                return jsonify(success=False, msg="Fuel delivery can only meet you while parked."), 409
+            car = next((car for car in state["owned_cars"] if car["id"] == state["current_car"]), None)
+            if not car:
+                return jsonify(success=False, msg="You need a car before ordering fuel."), 400
+            try:
+                amount = float(data.get("amount", 35))
+            except (TypeError, ValueError):
+                return jsonify(success=False, msg="Choose a valid fuel amount."), 400
+            amount = round(amount, 1)
+            if not math.isfinite(amount) or amount < 1 or amount > 100 - car.get("fuel", 0):
+                return jsonify(success=False, msg="Choose a fuel amount that fits your tank."), 400
+            cost = round(FUEL_DELIVERY_FEE + amount * FUEL_PRICE_PER_PERCENT, 2)
+            if save.balance < cost:
+                return jsonify(success=False, msg=f"Fuel delivery costs ${cost:.2f}."), 400
+            save.balance = round(save.balance - cost, 2)
+            car["fuel"] = min(100, car.get("fuel", 0) + amount)
         elif action == "travel":
             destination, mode = data.get("destination"), data.get("mode")
             if state["active_trip"]:
@@ -295,13 +331,16 @@ def init_city(app, login_required, current_user, get_or_create_save):
             quote["destination"] = destination
             quote["destination_name"] = CITY[destination]["name"]
             quote["started_at"] = now
-            quote["arrive_after"] = now + quote["eta_seconds"] * (0.58 if mode == "drive" else 0.9)
+            min_arrival = now + max(3, min(10, quote["eta_seconds"] * 0.25)) if mode == "drive" else now
+            quote["driver_name"] = save.name
+            quote["min_arrive_after"] = min_arrival
+            quote["arrive_after"] = now + quote["eta_seconds"] * 0.9
             state["active_trip"] = quote
         elif action == "arrive":
             trip = state["active_trip"]
             if not trip:
                 return jsonify(success=False, msg="There isn't an active trip."), 400
-            if time.time() < trip.get("arrive_after", 0):
+            if time.time() < trip.get("min_arrive_after", trip.get("arrive_after", 0)):
                 return jsonify(success=False, msg="The trip is still in progress."), 409
             if trip["mode"] == "taxi":
                 save.balance = round(max(0, save.balance - trip["price"]), 2)
