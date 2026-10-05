@@ -48,6 +48,11 @@ FUEL_DELIVERY_FEE = 12
 FUEL_PRICE_PER_PERCENT = 0.7
 BUSINESS_LAND_COST = 10000.0
 BUSINESS_STARTUP_COST = 250000.0
+CRASH_INJURIES = (
+    (40, "minor", 3, 50),
+    (70, "moderate", 8, 175),
+    (float("inf"), "severe", 18, 450),
+)
 
 START_STATE = {
     "location": "apartmentsA",
@@ -92,6 +97,17 @@ def _state(save, extra_locations=()):
 
 def _save_state(save, state):
     save.city_state_json = json.dumps(state, separators=(",", ":"))
+
+
+def _crash_injury(speed):
+    for limit, severity, health_loss, medical_bill in CRASH_INJURIES:
+        if speed < limit:
+            return {
+                "severity": severity,
+                "health_loss": health_loss,
+                "medical_bill": medical_bill,
+            }
+    raise ValueError("Crash speed is outside the supported range.")
 
 
 def _business_id(save):
@@ -494,6 +510,35 @@ def init_city(app, login_required, current_user, get_or_create_save,
             quote["min_arrive_after"] = min_arrival
             quote["arrive_after"] = now + quote["eta_seconds"] * 0.9
             state["active_trip"] = quote
+        elif action == "crash":
+            trip = state["active_trip"]
+            if not trip or trip.get("mode") != "drive":
+                return jsonify(success=False, msg="There isn't an active driving trip."), 409
+            speed = data.get("speed")
+            vehicle_id = data.get("vehicle_id")
+            if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or not 20 <= speed <= 120:
+                return jsonify(success=False, msg="Crash speed must be between 20 and 120."), 400
+            if isinstance(vehicle_id, bool) or not isinstance(vehicle_id, int) or not 0 <= vehicle_id < 54:
+                return jsonify(success=False, msg="Crash vehicle is invalid."), 400
+            crashed_vehicles = trip.setdefault("crashed_vehicles", [])
+            if vehicle_id in crashed_vehicles:
+                return jsonify(success=False, msg="This vehicle has already been involved in a crash this trip."), 409
+            if len(crashed_vehicles) >= 10:
+                return jsonify(success=False, msg="No further crash reports can be recorded this trip."), 409
+            injury = _crash_injury(speed)
+            save.health = max(0, (save.health or 0) - injury["health_loss"])
+            save.balance = round(save.balance - injury["medical_bill"], 2)
+            crashed_vehicles.append(vehicle_id)
+            trip["crash_count"] = len(crashed_vehicles)
+            trip["medical_bills"] = round(trip.get("medical_bills", 0) + injury["medical_bill"], 2)
+            _save_state(save, state)
+            db.session.commit()
+            payload = _payload(save, state, businesses)
+            payload["message"] = (
+                f"{injury['severity'].title()} crash at {round(speed)} speed: "
+                f"-{injury['health_loss']} HP and a ${injury['medical_bill']} medical bill."
+            )
+            return jsonify(payload)
         elif action == "arrive":
             trip = state["active_trip"]
             if not trip:
@@ -510,13 +555,12 @@ def init_city(app, login_required, current_user, get_or_create_save,
             event = None
             if trip["mode"] == "drive":
                 state["driving_skill"] = min(100, state["driving_skill"] + (2 if score < 0.45 else 4))
-                car = next((owned for owned in state["owned_cars"] if owned["id"] == state["current_car"]), None)
-                handling = CARS[car["id"]]["handling"] if car else 0.7
-                base_risk = 0.24 if score < 0.3 else 0.08 if score < 0.5 else 0.015
-                risk = max(0.005, base_risk + (1 - handling) * 0.08 - state["driving_skill"] * 0.001)
-                if random.random() < risk:
-                    save.health = max(0, (save.health or 0) - 3)
-                    event = "A minor fender-bender cost 3 health. Ease off before turns next time."
+                crash_count = trip.get("crash_count", 0)
+                if crash_count:
+                    event = (
+                        f"Arrived after {crash_count} crash(es). "
+                        f"Medical bills paid: ${trip.get('medical_bills', 0):.2f}."
+                    )
             state["location"] = trip["destination"]
             state["active_trip"] = None
             _save_state(save, state)

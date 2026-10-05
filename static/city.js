@@ -23,6 +23,10 @@ const BLOCK = {
 let W = 9600, H = 6000;
 const P = 300, BS = 264, MAXS = 2.4;
 const $ = (id) => document.getElementById(id);
+const setSvgHidden = (element, hidden) => {
+  if (hidden) element.setAttribute("hidden", "");
+  else element.removeAttribute("hidden");
+};
 const escapeHTML = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const overlay = $("overlay"), winTitle = $("winTitle"), winBody = $("winBody"), status = $("status"), svg = $("map");
 const money = (n) => "$" + Math.round(n).toLocaleString();
@@ -334,7 +338,7 @@ const trafficCount = [7, 8, 9, 16, 17, 18].includes(localHour) ? 54 : 30 + Math.
 for (let n = 0; n < trafficCount; n++) {
   const horiz = n % 2 === 0, road = 1 + Math.floor(Math.random() * (horiz ? H / P - 1 : W / P - 1)), dir = Math.random() < .5 ? 1 : -1;
   traffic.push({
-    horiz, road, dir, sp: 45 + Math.random() * 72, p: Math.random() * (horiz ? W : H),
+    id: n, horiz, road, dir, sp: 45 + Math.random() * 72, p: Math.random() * (horiz ? W : H),
     col: n % 9 === 0 ? "#00ffcc" : CC[n % 7], type: vehicleTypes[n % vehicleTypes.length], operator: n % 9 === 0,
     laneChangeAt: 1 + Math.floor(Math.random() * 5)
   });
@@ -401,9 +405,25 @@ function tick(now) {
       }
       if (!driveStopped && driveSpeed > 0 && now - (R.lastTrafficCheck || 0) > 350) {
         R.lastTrafficCheck = now;
-        const closeCar = traffic.find((vehicle) => Math.hypot(vehicle.x - markerX, vehicle.y - markerY) < 22);
+        const steering = driveControls.has("left") || driveControls.has("right");
+        const closeCar = traffic.find((vehicle) =>
+          !R.crashedVehicles.has(vehicle.id) && Math.hypot(vehicle.x - markerX, vehicle.y - markerY) < 22
+        );
         if (closeCar) {
-          if (driveControls.has("left") || driveControls.has("right") || driveSpeed < 0.9) {
+          const distance = Math.hypot(closeCar.x - markerX, closeCar.y - markerY);
+          const impact = driveSpeed >= 0.35 && (distance < 14 || (!steering && driveSpeed >= 0.9));
+          if (impact) {
+            R.crashedVehicles.add(closeCar.id);
+            const impactSpeed = Math.round(driveSpeed * 60);
+            driveScore = Math.max(0, driveScore - 0.14);
+            driveSpeed = Math.max(0.25, driveSpeed * 0.35);
+            status.textContent = `CRASH at ${impactSpeed} speed · injury and medical bill assessed.`;
+            R.crashReports = R.crashReports.then(() =>
+              cityAction("crash", { speed: impactSpeed, vehicle_id: closeCar.id })
+            )
+              .then((result) => { status.textContent = result.message; })
+              .catch((error) => { status.textContent = `Crash report failed: ${error.message}`; });
+          } else if (steering || driveSpeed < 0.9) {
             driveScore = Math.min(1, driveScore + 0.08);
             status.textContent = `${closeCar.operator ? "Operator car" : closeCar.type} passed · nice control.`;
           } else {
@@ -416,17 +436,17 @@ function tick(now) {
     }
     const angle = (Math.atan2(q.y - p.y, q.x - p.x) * 180) / Math.PI;
     const marker = R.mode === "taxi" ? $("taxi") : R.mode === "walk" ? $("walker") : $("player");
-    marker.hidden = false;
-    $("taxi").hidden = R.mode !== "taxi";
-    $("player").hidden = R.mode !== "drive";
-    $("walker").hidden = R.mode !== "walk";
+    setSvgHidden(marker, false);
+    setSvgHidden($("taxi"), R.mode !== "taxi");
+    setSvgHidden($("player"), R.mode !== "drive");
+    setSvgHidden($("walker"), R.mode !== "walk");
     if (R.mode === "drive") {
       const currentCar = cityState.cars.find((car) => car.id === cityState.current_car);
       marker.style.setProperty("--vehicle-color", currentCar?.paint || "var(--pixel-cyan)");
       $("playerName").textContent = (currentCar?.driver_name || cityState.name || "DRIVER").slice(0, 12);
     }
     marker.setAttribute("transform", `translate(${markerX} ${markerY}) rotate(${angle})`);
-    const mt = $("mt"); mt.hidden = false; mt.setAttribute("cx", p.x); mt.setAttribute("cy", p.y);
+    const mt = $("mt"); setSvgHidden(mt, false); mt.setAttribute("cx", p.x); mt.setAttribute("cy", p.y);
     if (follow || R.mode === "drive") {
       if (R.mode === "drive") {
         cam.s = clamp(Math.max(minS, 1.08), minS, MAXS);
@@ -464,18 +484,18 @@ function updatePlayerMarker() {
   if (!tripAnimation) {
     const currentCar = cityState.cars?.find((car) => car.id === cityState.current_car);
     const parkedCar = $("player");
-    parkedCar.hidden = !currentCar;
+    setSvgHidden(parkedCar, !currentCar);
     if (currentCar) {
       parkedCar.style.setProperty("--vehicle-color", currentCar.paint || "var(--pixel-cyan)");
       $("playerName").textContent = (currentCar.driver_name || cityState.name || "DRIVER").slice(0, 12);
       parkedCar.setAttribute("transform", `translate(${x + 42} ${y + 22})`);
     }
     const walker = $("walker");
-    walker.hidden = false;
+    setSvgHidden(walker, false);
     walker.setAttribute("transform", `translate(${x} ${y})`);
   }
   const current = $("mt");
-  if (current) { current.hidden = false; current.setAttribute("cx", x); current.setAttribute("cy", y); }
+  if (current) { setSvgHidden(current, false); current.setAttribute("cx", x); current.setAttribute("cy", y); }
 }
 
 function serviceMessage() {
@@ -648,14 +668,15 @@ async function startTrip(destination, mode) {
       tripAnimation = {
         mode, destination, t0: performance.now(), dur: duration,
         len: route.getTotalLength(), progress: 0, laneOffset: 0,
-        traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points)
+        traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points),
+        crashedVehicles: new Set(), crashReports: Promise.resolve()
       };
       $("driveHud").hidden = mode !== "drive";
       $("driveTitle").textContent = `${cityState.cars.find((car) => car.id === cityState.current_car)?.name || "CAR"} · ${NAMES[destination]}`;
       $("driveStop").textContent = "STOP CAR";
-      $("taxi").hidden = mode !== "taxi";
-      $("player").hidden = mode !== "drive";
-      $("walker").hidden = mode !== "walk";
+      setSvgHidden($("taxi"), mode !== "taxi");
+      setSvgHidden($("player"), mode !== "drive");
+      setSvgHidden($("walker"), mode !== "walk");
       anim = null;
       if (mode === "drive") cam.s = clamp(Math.max(minS, 1.08), minS, MAXS);
       follow = true;
@@ -671,14 +692,15 @@ async function finishTrip() {
   const current = tripAnimation;
   if (!current) return;
   try {
+    await current.crashReports;
     const result = await cityAction("arrive", { drive_score: driveScore });
     tripAnimation = null;
     driveControls.clear();
     $("driveHud").hidden = true;
-    $("taxi").hidden = true;
-    $("player").hidden = true;
-    $("walker").hidden = false;
-    $("mt").hidden = true;
+    setSvgHidden($("taxi"), true);
+    setSvgHidden($("player"), true);
+    setSvgHidden($("walker"), false);
+    setSvgHidden($("mt"), true);
     $("route").setAttribute("d", "");
     follow = false;
     updatePlayerMarker();
@@ -783,16 +805,16 @@ requestState().then((data) => {
     const route = $("route");
     route.setAttribute("d", "M" + points.map((point) => point.join(" ")).join("L"));
     const mode = trip.mode;
-    tripAnimation = { mode, destination: trip.destination, t0: performance.now() - elapsed * 1000, dur: trip.eta_seconds * 1000, len: route.getTotalLength(), progress: mode === "drive" ? 0 : elapsed / trip.eta_seconds, laneOffset: 0, traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points) };
+    tripAnimation = { mode, destination: trip.destination, t0: performance.now() - elapsed * 1000, dur: trip.eta_seconds * 1000, len: route.getTotalLength(), progress: mode === "drive" ? 0 : elapsed / trip.eta_seconds, laneOffset: 0, traffic: trip.traffic || "normal", finishing: false, turns: routeTurns(points), crashedVehicles: new Set(trip.crashed_vehicles || []), crashReports: Promise.resolve() };
     driveSpeed = mode === "drive" ? 1 : 0;
     driveResumeSpeed = 1;
     driveStopped = false;
     driveControls.clear();
     if (mode === "drive") $("driveStop").textContent = "STOP CAR";
     $("driveHud").hidden = mode !== "drive";
-    $("taxi").hidden = mode !== "taxi";
-    $("player").hidden = mode !== "drive";
-    $("walker").hidden = mode !== "walk";
+    setSvgHidden($("taxi"), mode !== "taxi");
+    setSvgHidden($("player"), mode !== "drive");
+    setSvgHidden($("walker"), mode !== "walk");
     follow = true;
   } else flyTo(...centerOf(data.location), 0.9);
 }).catch((error) => { status.textContent = error.message; });

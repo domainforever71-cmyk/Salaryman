@@ -188,6 +188,35 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
         json={"action": "arrive", "drive_score": 1},
     )
     assert early_arrival.status_code == 409
+    before_minor_crash = client.get("/api/game/city/state").get_json()
+    minor_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 35, "vehicle_id": 0},
+    ).get_json()
+    assert minor_crash["health"] == before_minor_crash["health"] - 3
+    assert minor_crash["balance"] == before_minor_crash["balance"] - 50
+    assert "Minor crash" in minor_crash["message"]
+
+    before_severe_crash = minor_crash
+    severe_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 1},
+    ).get_json()
+    assert severe_crash["health"] == before_severe_crash["health"] - 18
+    assert severe_crash["balance"] == before_severe_crash["balance"] - 450
+    assert "Severe crash" in severe_crash["message"]
+
+    duplicate_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 1},
+    )
+    assert duplicate_crash.status_code == 409
+    invalid_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 121, "vehicle_id": 2},
+    )
+    assert invalid_crash.status_code == 400
+
     with app.app_context():
         save = get_save(user)
         state = json.loads(save.city_state_json)
@@ -200,6 +229,8 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
     ).get_json()
     assert arrived_by_car["location"] == "suburban_house"
     assert arrived_by_car["active_trip"] is None
+    assert "2 crash(es)" in arrived_by_car["message"]
+    assert "$500.00" in arrived_by_car["message"]
 
     with app.app_context():
         save = get_save(user)
@@ -213,6 +244,10 @@ def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
         json={"action": "travel", "destination": "supermarket", "mode": "taxi"},
     ).get_json()
     assert taxi["balance"] == balance_before_taxi
+    assert client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 2},
+    ).status_code == 409
     fare = taxi["active_trip"]["price"]
     with app.app_context():
         save = get_save(user)
