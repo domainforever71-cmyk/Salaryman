@@ -1,0 +1,9 @@
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+SQLAlchemy==2.0.35
+psycopg2-binary==2.9.10
+Werkzeug==3.0.4
+requests==2.32.3
+python-dotenv==1.0.1
+cryptography>=42
+gunicorn==23.0.0

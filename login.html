@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title> Salaryman </title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #010306;
+      --panel-bg: #050810;
+      --border-color: #0f1c30;
+      --pixel-cyan: #00ffcc;
+      --pixel-green: #00ff66;
+      --pixel-red: #ff3366;
+      --font-current: 'Share Tech Mono', monospace;
+      --font-display: 'VT323', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ---- classic Windows "Welcome screen" shell: a gradient sky, the OS
+       wordmark top-left, a tile per account bottom-left of center, and a
+       help strip along the bottom - laid out like the XP welcome screen,
+       lit with this game's own cyan/black palette instead of XP blue. */
+    html, body { height: 100%; }
+    body {
+      background:
+        radial-gradient(ellipse at 20% 10%, rgba(0,255,204,0.10), transparent 55%),
+        linear-gradient(160deg, #04141c 0%, #010306 55%, #000 100%);
+      color: var(--pixel-cyan);
+      font-family: var(--font-current);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg, rgba(0,0,0,0.14) 0px, rgba(0,0,0,0.14) 1px, transparent 1px, transparent 3px);
+      pointer-events: none; opacity: 0.35; z-index: 5;
+    }
+
+    .xp-brand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 22px 26px;
+    }
+    .xp-brand .mark {
+      width: 30px; height: 30px;
+      background: var(--pixel-cyan); color: var(--bg-dark);
+      font-weight: bold; font-size: 17px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 2px 2px 0 #008877;
+    }
+    .xp-brand .word { font-family: var(--font-display); font-size: 20px; letter-spacing: 3px; color: #fff; }
+    .xp-brand .sub { font-size: 9.5px; color: #556b85; letter-spacing: 1.5px; margin-left: 4px; }
+
+    .xp-main {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 60px;
+      padding: 20px 30px 70px;
+      flex-wrap: wrap;
+    }
+    .xp-intro { max-width: 300px; }
+    .xp-intro h1 {
+      font-family: var(--font-display); font-size: 34px; letter-spacing: 1px;
+      color: #fff; line-height: 1.15; margin-bottom: 10px;
+    }
+    .xp-intro p { font-size: 12px; color: var(--text-main, #73a5c9); line-height: 1.7; }
+
+    .xp-tiles { display: flex; flex-direction: column; gap: 10px; width: 300px; }
+
+    .xp-tile {
+      display: flex; align-items: center; gap: 14px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 14px;
+      cursor: pointer;
+      text-align: left;
+      color: var(--pixel-cyan);
+      font-family: var(--font-current);
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+    .xp-tile:hover { background: rgba(0,255,204,0.06); transform: translateX(2px); }
+    .xp-tile.active {
+      background: rgba(0,255,204,0.1);
+      border-color: var(--pixel-cyan);
+      box-shadow: 0 0 18px rgba(0,255,204,0.15);
+    }
+    .xp-tile-avatar {
+      flex: 0 0 auto;
+      width: 42px; height: 42px; border-radius: 6px;
+      background: linear-gradient(160deg, #0c2230, #010306);
+      border: 1px solid var(--border-color);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 19px;
+    }
+    .xp-tile.active .xp-tile-avatar { border-color: var(--pixel-cyan); }
+    .xp-tile-text { display: flex; flex-direction: column; gap: 2px; }
+    .xp-tile-name { font-size: 13px; font-weight: bold; letter-spacing: 0.5px; }
+    .xp-tile-hint { font-size: 10px; color: #5c7a99; }
+
+    /* Credentials panel unfolds beneath whichever tile is active - same
+       fields/ids/JS as before, just re-housed visually. */
+    .xp-cred-panel {
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height 0.25s ease;
+    }
+    .xp-cred-panel.open { max-height: 260px; }
+    .xp-cred-inner {
+      margin-top: 4px;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: rgba(0,0,0,0.35);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 9.5px; color: #aaa; letter-spacing: 0.5px; }
+    .form-group input {
+      background: #000; border: 1px solid var(--border-color);
+      color: #fff; padding: 9px 10px; font-family: var(--font-current); font-size: 12px;
+      border-radius: 4px;
+    }
+    .form-group input:focus { outline: none; border-color: var(--pixel-cyan); }
+
+    .xp-submit-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+    .auth-btn {
+      flex: 1;
+      background: rgba(0, 255, 204, 0.1); border: 1px solid var(--pixel-cyan);
+      color: var(--pixel-cyan); padding: 10px; font-family: var(--font-current);
+      font-size: 11.5px; cursor: pointer; text-transform: uppercase; border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .auth-btn:hover { background: var(--pixel-cyan); color: #000; }
+
+    .status-msg { font-size: 11px; text-align: center; min-height: 14px; }
+
+    .xp-google {
+      margin-top: 4px; padding-top: 10px;
+      border-top: 1px dashed var(--border-color);
+      text-align: center;
+    }
+    .xp-google-note { font-size: 9px; color: #556b85; margin-bottom: 6px; }
+    .xp-google a {
+      display: block; text-decoration: none; text-align: center;
+      border: 1px solid var(--border-color); color: var(--text-main, #73a5c9);
+      padding: 9px; font-size: 11px; border-radius: 4px;
+    }
+    .xp-google a:hover { border-color: var(--pixel-cyan); color: var(--pixel-cyan); }
+
+    .xp-footer {
+      text-align: center; font-size: 9.5px; color: #445b73;
+      padding: 12px 0 18px; letter-spacing: 0.5px;
+    }
+
+    /* A single rotating "sponsored" strip, styled like a banner ad that
+       wandered into a terminal - dashed border, off-palette yellow, easy
+       to visually tune out, same as a real one. Pure flavor: it links
+       nowhere and nothing about login depends on it rendering. */
+    .xp-ad {
+      max-width: 520px; margin: 18px auto 0; padding: 8px 12px;
+      border: 1px dashed #4a3f1a; background: rgba(255,187,0,0.05);
+      display: flex; align-items: center; gap: 10px; font-size: 10.5px;
+      color: #b7a45c;
+    }
+    .xp-ad-tag {
+      font-size: 8.5px; letter-spacing: 1px; border: 1px solid #4a3f1a;
+      padding: 1px 5px; color: #8a7a4a; flex-shrink: 0;
+    }
+    .xp-ad-text { line-height: 1.4; }
+
+    @media (max-width: 700px) {
+      .xp-main { flex-direction: column; gap: 24px; padding-top: 10px; }
+      .xp-intro { text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="xp-brand">
+    <div class="mark" aria-hidden="true">%</div>
+    <div class="word">salaryman</div>
+    <div class="sub">OPERATOR SIGN-IN</div>
+  </div>
+
+  <div class="xp-main">
+    <div class="xp-intro">
+      <h1>Welcome back, Operator.</h1>
+      <p>Pick an account below to continue. New here? Use the second tile to register — it takes ten seconds and no email is required.</p>
+    </div>
+
+    <div class="xp-tiles">
+      <button class="xp-tile active" id="tabLogin" type="button" onclick="setMode('login')">
+        <span class="xp-tile-avatar" aria-hidden="true">%</span>
+        <span class="xp-tile-text">
+          <span class="xp-tile-name">OPERATOR</span>
+          <span class="xp-tile-hint">Sign in to an existing account</span>
+        </span>
+      </button>
+
+      <div class="xp-cred-panel open" id="credPanel">
+        <div class="xp-cred-inner">
+          <div class="form-group">
+            <label>OPERATOR USERNAME</label>
+            <input type="text" id="authUsername" placeholder="Enter username...">
+          </div>
+          <div class="form-group">
+            <label>SECURITY KEY / PASSWORD</label>
+            <input type="password" id="authPassword" placeholder="Enter password...">
+          </div>
+          <div class="xp-submit-row">
+            <button class="auth-btn" id="authSubmitBtn" onclick="submitAuth()">[AUTHENTICATE SESSION]</button>
+          </div>
+          <div class="status-msg" id="statusMsg"></div>
+        </div>
+      </div>
+
+      <button class="xp-tile" id="tabRegister" type="button" onclick="setMode('register')">
+        <span class="xp-tile-avatar" aria-hidden="true">+</span>
+        <span class="xp-tile-text">
+          <span class="xp-tile-name">NEW OPERATOR</span>
+          <span class="xp-tile-hint">Register a new account</span>
+        </span>
+      </button>
+
+      <div class="xp-google">
+        <div class="xp-google-note">Google sign-in only works once you've linked an account from Settings while logged in.</div>
+        <a href="/auth/google/login">[CONTINUE WITH GOOGLE]</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="xp-ad" id="loginAd">
+    <span class="xp-ad-tag">SPONSORED</span>
+    <span class="xp-ad-text" id="loginAdText">Loading...</span>
+  </div>
+
+  <div class="xp-footer">SALARYMAN — a retro terminal experiment</div>
+
+<script>
+  var LOGIN_ADS = [
+    'GHOST-VPN PREMIUM \u2014 route through two relays at once. Still not real security. \u2014 omniapps.store',
+    'Missed a payment? Corner Lender approves 9 out of 10 operators. Terms apply, mostly to you. \u2014 corner-lender.biz',
+    'STREAMTUBE: now with 40% fewer ads for OMNI+ subscribers. This one doesn\u2019t count.',
+    'VEX SCANNER \u2014 "an AI that watches the spreads so you don\u2019t have to." Watches. Doesn\u2019t trade for you.',
+    'BLOGNET: read what everyone else already traded on, twelve minutes late.',
+    'LUCKYSPIN \u2014 the house always wins eventually, but tonight could be different! (It is not different tonight.)',
+    'Apex Bullion: still just sitting there. Some operators call that a strategy.',
+    'JobBoardNet Premium listings \u2014 be seen by companies who still won\u2019t reply.'
+  ];
+  (function rotateAd() {
+    var el = document.getElementById('loginAdText');
+    if (!el) return;
+    var pick = LOGIN_ADS[Math.floor(Math.random() * LOGIN_ADS.length)];
+    el.textContent = pick;
+  })();
+</script>
+<script>
+  let mode = 'login';
+
+  (function showGoogleError() {
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get('google_error');
+    if (!err) return;
+    const msg = document.getElementById('statusMsg');
+    const friendly = {
+      no_account: "No Salaryman account has that Google account linked yet. Log in normally, then link Google from Settings.",
+      not_logged_in: "Log in first, then link Google from Settings.",
+      already_linked: "That Google account is already linked to a different operator.",
+      exchange_failed: "Google sign-in failed. Try again.",
+      state_mismatch: "Sign-in session expired. Try again.",
+    };
+    msg.style.color = 'var(--pixel-red)';
+    msg.innerText = friendly[err] || `Google sign-in failed (${err}).`;
+  })();
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('tabLogin').classList.toggle('active', m === 'login');
+    document.getElementById('tabRegister').classList.toggle('active', m === 'register');
+    document.getElementById('authSubmitBtn').innerText = m === 'login' ? '[AUTHENTICATE SESSION]' : '[REGISTER NEW USER]';
+    // Same single credentials panel, just re-anchored under whichever tile
+    // is active - a real XP welcome screen unfolds the password box right
+    // under the tile you clicked, so the panel moves in the DOM instead of
+    // needing a second copy of the same fields.
+    const panel = document.getElementById('credPanel');
+    const anchor = document.getElementById(m === 'login' ? 'tabLogin' : 'tabRegister');
+    if (panel && anchor) anchor.insertAdjacentElement('afterend', panel);
+    panel.classList.add('open');
+    document.getElementById('statusMsg').innerText = '';
+  }
+
+  async function submitAuth() {
+    const username = document.getElementById('authUsername').value.trim();
+    const password = document.getElementById('authPassword').value.trim();
+    const msg = document.getElementById('statusMsg');
+
+    if (!username || !password) {
+      msg.style.color = 'var(--pixel-red)';
+      msg.innerText = 'Provide username and password.';
+      return;
+    }
+
+    const endpoint = mode === 'login' ? '/login' : '/register';
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (mode === 'login') {
+        window.location.href = '/';
+      } else {
+        msg.style.color = 'var(--pixel-green)';
+        msg.innerText = 'Registration complete. Please login.';
+        setMode('login');
+      }
+    } else {
+      msg.style.color = 'var(--pixel-red)';
+      msg.innerText = data.msg || 'Authentication failed.';
+    }
+  }
+</script>
+<script src="{{ url_for('static', filename='astra_servers.js') }}"></script>
+</body>
+</html>

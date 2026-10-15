@@ -1,0 +1,365 @@
+"""Career-backed Maps travel, car ownership, and food regressions."""
+import json
+import os
+import tempfile
+import time
+import atexit
+
+from flask import Flask
+
+from city_travel import init_city
+from models import GameSave, User, db
+
+
+def test_maps_city_uses_career_wallet_needs_and_vehicle_state():
+    temp_dir = tempfile.TemporaryDirectory()
+    atexit.register(temp_dir.cleanup)
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.config.update(
+        SECRET_KEY="city-test-secret",
+        SQLALCHEMY_DATABASE_URI="sqlite:///" + os.path.join(temp_dir.name, "city.db").replace("\\", "/"),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    )
+    db.init_app(app)
+    with app.app_context():
+        db.create_all()
+        user = User(username="CityTester", password_hash="test-hash")
+        db.session.add(user)
+        db.session.flush()
+        save = GameSave(user_id=user.id, active=True, name="CityTester", balance=2000, health=80, hunger=100)
+        db.session.add(save)
+        db.session.commit()
+        user_id = user.id
+
+    def current_user():
+        return user
+
+    def get_save(_user):
+        return GameSave.query.filter_by(user_id=user_id).first()
+
+    init_city(app, lambda handler: handler, current_user, get_save)
+    client = app.test_client()
+    assert client.get("/maps").status_code == 200
+
+    state = client.get("/api/game/city/state").get_json()
+    assert state["career_active"] and state["hunger"] == 100
+    assert state["balance"] == 2000
+    quotes = client.get("/api/game/city/quotes?destination=supermarket").get_json()
+    assert quotes["quotes"]["walk"]["available"]
+    assert 15 <= quotes["quotes"]["walk"]["eta_seconds"] <= 60
+    assert not quotes["quotes"]["drive"]["available"]
+    assert quotes["quotes"]["taxi"]["price"] > 0
+
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state.update(location="supermarket", active_trip=None)
+        save.hunger = 50
+        save.health = 70
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+
+    bought = client.post("/api/game/city/action", json={"action": "buy_food", "item": "bread"}).get_json()
+    assert bought["inventory"]["bread"] == 1
+    assert bought["balance"] == 1996
+    eaten = client.post("/api/game/city/action", json={"action": "eat", "item": "bread"}).get_json()
+    assert eaten["hunger"] == 68 and eaten["health"] == 71
+
+    with app.app_context():
+        save = get_save(user)
+        save.balance = 300000
+        db.session.commit()
+    company = client.post(
+        "/api/game/start_business",
+        json={"name": "Night Shift Motors", "type": "Car Dealership"},
+    ).get_json()
+    assert company["success"]
+    assert company["land_cost"] == 10000 and company["startup_cost"] == 250000
+    assert company["balance"] == 40000
+    assert company["build_days"] in (1, 2)
+
+    with app.app_context():
+        other_owner = User(username="OtherOperator", password_hash="test-hash")
+        db.session.add(other_owner)
+        db.session.flush()
+        db.session.add(GameSave(
+            user_id=other_owner.id, active=True, name="OtherOperator", balance=0,
+            job_status="business_owner", company_name="Harbor Repair",
+            business_started_day=1, day=1,
+            city_state_json=json.dumps({
+                "location": "apartmentsA",
+                "business": {"type": "Repair Shop", "ready_day": 1},
+            }),
+        ))
+        db.session.commit()
+
+    city_state = client.get("/api/game/city/state").get_json()
+    business = next(place for place in city_state["businesses"] if place["name"] == "Night Shift Motors")
+    assert business["name"] == "Night Shift Motors"
+    assert business["type"] == "Car Dealership"
+    assert business["status"] == "building"
+    assert business["x"] >= 12
+    other_business = next(place for place in city_state["businesses"] if place["name"] == "Harbor Repair")
+    assert other_business["owner"] == "OtherOperator"
+    assert other_business["status"] == "open"
+    assert (other_business["x"], other_business["y"]) != (business["x"], business["y"])
+    business_quotes = client.get(
+        f"/api/game/city/quotes?destination={business['id']}"
+    ).get_json()["quotes"]
+    assert business_quotes["walk"]["available"]
+    assert business_quotes["drive"]["available"] is False
+
+    business_trip = client.post(
+        "/api/game/city/action",
+        json={"action": "travel", "destination": business["id"], "mode": "walk"},
+    ).get_json()
+    assert business_trip["active_trip"]["destination"] == business["id"]
+    with app.app_context():
+        save = get_save(user)
+        save.day = company["ready_day"]
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["min_arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    arrived_at_business = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive"},
+    ).get_json()
+    assert arrived_at_business["location"] == business["id"]
+    assert arrived_at_business["businesses"][0]["status"] == "open"
+
+    with app.app_context():
+        save = get_save(user)
+        save.city_state_json = json.dumps({
+            "location": "carshop", "inventory": {}, "owned_cars": [],
+            "current_car": None, "driving_skill": 0, "active_trip": None,
+        })
+        save.balance = 8000
+        db.session.commit()
+
+    bought_car = client.post("/api/game/city/action", json={"action": "buy_car", "car": "sedan"}).get_json()
+    assert bought_car["current_car"] == "sedan"
+    assert bought_car["balance"] == 1800
+    assert bought_car["cars"][0]["fuel"] == 100
+    assert bought_car["cars"][0]["paint"].startswith("#")
+    assert bought_car["cars"][0]["driver_name"] == "CityTester"
+
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state.update(location="apartmentsA", active_trip=None)
+        state["owned_cars"][0]["fuel"] = 4
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+
+    low_fuel = client.get("/api/game/city/quotes?destination=suburban_house").get_json()["quotes"]["drive"]
+    assert not low_fuel["available"]
+    assert low_fuel["fuel_needed"] > low_fuel["current_fuel"]
+    assert low_fuel["delivery_percent"] > 0
+    delivered = client.post(
+        "/api/game/city/action",
+        json={"action": "order_fuel", "amount": low_fuel["delivery_percent"]},
+    ).get_json()
+    assert delivered["cars"][0]["fuel"] >= low_fuel["fuel_needed"]
+
+    long_trip = client.get("/api/game/city/quotes?destination=suburban_house").get_json()["quotes"]
+    assert long_trip["walk"]["eta_seconds"] > 60
+    assert long_trip["walk"]["eta_seconds"] <= 120
+    assert long_trip["drive"]["available"]
+    started = client.post(
+        "/api/game/city/action",
+        json={"action": "travel", "destination": "suburban_house", "mode": "drive"},
+    ).get_json()
+    assert started["active_trip"]["mode"] == "drive"
+    assert started["active_trip"]["driver_name"] == "CityTester"
+    assert started["cars"][0]["fuel"] < 100
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    driving_state = client.get("/api/game/city/state").get_json()
+    assert driving_state["location"] == "apartmentsA"
+    assert driving_state["active_trip"]["mode"] == "drive"
+
+    early_arrival = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive", "drive_score": 1},
+    )
+    assert early_arrival.status_code == 409
+    before_minor_crash = client.get("/api/game/city/state").get_json()
+    minor_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 35, "vehicle_id": 0},
+    ).get_json()
+    assert minor_crash["health"] == before_minor_crash["health"] - 3
+    assert minor_crash["balance"] == before_minor_crash["balance"] - 50
+    assert "Minor crash" in minor_crash["message"]
+
+    before_severe_crash = minor_crash
+    severe_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 1},
+    ).get_json()
+    assert severe_crash["health"] == before_severe_crash["health"] - 18
+    assert severe_crash["balance"] == before_severe_crash["balance"] - 450
+    assert "Severe crash" in severe_crash["message"]
+
+    duplicate_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 1},
+    )
+    assert duplicate_crash.status_code == 409
+    invalid_crash = client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 121, "vehicle_id": 2},
+    )
+    assert invalid_crash.status_code == 400
+
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["min_arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    arrived_by_car = client.post(
+        "/api/game/city/action",
+        json={"action": "arrive", "drive_score": 1},
+    ).get_json()
+    assert arrived_by_car["location"] == "suburban_house"
+    assert arrived_by_car["active_trip"] is None
+    assert "2 crash(es)" in arrived_by_car["message"]
+    assert "$500.00" in arrived_by_car["message"]
+
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state.update(location="apartmentsA", active_trip=None)
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    balance_before_taxi = client.get("/api/game/city/state").get_json()["balance"]
+    taxi = client.post(
+        "/api/game/city/action",
+        json={"action": "travel", "destination": "supermarket", "mode": "taxi"},
+    ).get_json()
+    fare = taxi["active_trip"]["price"]
+    # the fare is taken when the taxi is dispatched, not on arrival
+    assert taxi["balance"] == round(balance_before_taxi - fare, 2)
+    assert taxi["active_trip"]["paid"] is True
+    assert client.post(
+        "/api/game/city/action",
+        json={"action": "crash", "speed": 80, "vehicle_id": 2},
+    ).status_code == 409
+    with app.app_context():
+        save = get_save(user)
+        state = json.loads(save.city_state_json)
+        state["active_trip"]["arrive_after"] = time.time() - 1
+        save.city_state_json = json.dumps(state)
+        db.session.commit()
+    arrived = client.get("/api/game/city/state").get_json()
+    assert arrived["location"] == "supermarket"
+    assert arrived["balance"] == round(balance_before_taxi - fare, 2)      # not charged a second time
+    again = client.get("/api/game/city/state").get_json()
+    assert again["balance"] == arrived["balance"]
+
+
+def _env(balance=100000, name="Regress"):
+    temp_dir = tempfile.TemporaryDirectory()
+    atexit.register(temp_dir.cleanup)
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.config.update(
+        SECRET_KEY="city-test-secret",
+        SQLALCHEMY_DATABASE_URI="sqlite:///" + os.path.join(temp_dir.name, "city.db").replace("\\", "/"),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    )
+    db.init_app(app)
+    with app.app_context():
+        db.create_all()
+        user = User(username="Reg" + name, password_hash="x")
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(GameSave(user_id=user.id, active=True, name=name, balance=balance, health=80, hunger=50))
+        db.session.commit()
+        user_id = user.id
+
+    def get_save(_user=None):
+        return GameSave.query.filter_by(user_id=user_id).first()
+
+    init_city(app, lambda handler: handler, lambda: User.query.get(user_id), get_save)
+
+    def edit_state(fn):
+        with app.app_context():
+            save = get_save()
+            state = json.loads(save.city_state_json or "{}")
+            fn(state, save)
+            save.city_state_json = json.dumps(state)
+            db.session.commit()
+
+    return app, app.test_client(), edit_state
+
+
+def test_driving_regressions():
+    """Bugs found in the audit: paint lost on reload, quote != charge, stuck trips, fuel rounding."""
+    app, client, edit_state = _env()
+    edit_state(lambda state, save: state.update(location="carshop"))
+
+    # 1. the paint chosen at purchase survives a reload (it used to be stripped on every load)
+    bought = client.post("/api/game/city/action", json={"action": "buy_car", "car": "sedan"}).get_json()
+    paint = bought["cars"][0]["paint"]
+    reloaded = client.get("/api/game/city/state").get_json()
+    assert reloaded["cars"][0]["paint"] == paint
+    assert reloaded["cars"][0]["driver_name"] == "Regress"
+
+    # 2. the quote you see is the trip you get (same fare, same ETA)
+    q1 = client.get("/api/game/city/quotes?destination=supermarket").get_json()["quotes"]
+    q2 = client.get("/api/game/city/quotes?destination=supermarket").get_json()["quotes"]
+    assert q1 == q2
+    started = client.post("/api/game/city/action",
+                          json={"action": "travel", "destination": "supermarket", "mode": "taxi"}).get_json()
+    assert started["active_trip"]["price"] == q1["taxi"]["price"]
+    assert started["active_trip"]["eta_seconds"] == q1["taxi"]["eta_seconds"]
+
+    # 3. a taxi that nobody reported lands by itself, and arrive afterwards is harmless
+    edit_state(lambda state, save: state["active_trip"].update(arrive_after=time.time() - 1))
+    landed = client.get("/api/game/city/state").get_json()
+    assert landed["location"] == "supermarket" and landed["active_trip"] is None
+    late = client.post("/api/game/city/action", json={"action": "arrive"}).get_json()
+    assert late["success"] and late["balance"] == landed["balance"]
+
+    # 4. an abandoned walk is finished for the player after ETA + grace (no permanent lock-out)
+    started = client.post("/api/game/city/action",
+                          json={"action": "travel", "destination": "restaurant", "mode": "walk"}).get_json()
+    assert started["active_trip"]["mode"] == "walk"
+    edit_state(lambda state, save: state["active_trip"].update(arrive_after=time.time() - 500))
+    assert client.get("/api/game/city/state").get_json()["location"] == "restaurant"
+
+    # 5. fuel delivery accepts the browser's floating-point 'room left in the tank'
+    edit_state(lambda state, save: state["owned_cars"][0].update(fuel=64.3))
+    ordered = client.post("/api/game/city/action", json={"action": "order_fuel", "amount": 100 - 64.3}).get_json()
+    assert ordered["success"] and ordered["cars"][0]["fuel"] == 100
+
+    # 6. bag cap is enforced up front instead of silently deleting paid-for food
+    edit_state(lambda state, save: state.update(location="supermarket", inventory={"bread": 95}))
+    before = client.get("/api/game/city/state").get_json()["balance"]
+    refused = client.post("/api/game/city/action", json={"action": "buy_food", "item": "bread", "quantity": 10})
+    assert refused.status_code == 400
+    assert client.get("/api/game/city/state").get_json()["balance"] == before
+
+    # 7. a top-up at the pump costs less than a full refill, and a full tank is refused
+    edit_state(lambda state, save: state.update(location="gasstation"))
+    edit_state(lambda state, save: state["owned_cars"][0].update(fuel=90))
+    bal = client.get("/api/game/city/state").get_json()["balance"]
+    topup = client.post("/api/game/city/action", json={"action": "refuel"}).get_json()
+    assert topup["cars"][0]["fuel"] == 100 and round(bal - topup["balance"], 2) < 15
+    assert client.post("/api/game/city/action", json={"action": "refuel"}).status_code == 400
+
+    # 8. garbage input never 500s
+    for bad in ("text", [1, 2], {"action": {"x": 1}}, {"action": "travel", "destination": [], "mode": {}}):
+        assert client.post("/api/game/city/action", json=bad).status_code in (400, 409)
+
+
+if __name__ == "__main__":
+    test_maps_city_uses_career_wallet_needs_and_vehicle_state()
+    test_driving_regressions()
+    print("Maps city travel and daily-needs checks passed.")

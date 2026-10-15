@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salaryman — Terminal Access</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #010306;
+      --panel-bg: #050810;
+      --border-color: #0f1c30;
+      --border-glow: rgba(0, 255, 204, 0.15);
+      --text-main: #73a5c9;
+      --pixel-green: #00ff66;
+      --pixel-red: #ff3366;
+      --pixel-cyan: #00ffcc;
+      --pixel-yellow: #ffbb00;
+      --ai-note: #a78bfa;
+      --font-mono: 'Share Tech Mono', monospace;
+      --font-display: 'VT323', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      overflow-x: hidden;
+      position: relative;
+    }
+
+
+    body::before {
+      content: " ";
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.5) 50%),
+                  linear-gradient(90deg, rgba(255, 0, 0, 0.008), rgba(0, 255, 0, 0.006), rgba(0, 0, 255, 0.008));
+      background-size: 100% 3px, 4px 100%;
+      pointer-events: none;
+      z-index: 9000;
+    }
+
+   
+    #bootOverlay {
+      position: fixed; inset: 0;
+      background: var(--bg-dark);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9998;
+      transition: opacity 0.6s ease;
+      padding: 20px;
+    }
+    .boot-box {
+      width: 560px; max-width: 100%;
+      border: 1px solid var(--border-color);
+      background: var(--panel-bg);
+      padding: 26px 28px;
+      box-shadow: 0 0 40px var(--border-glow);
+    }
+    .boot-classification { font-size: 10.5px; color: #445b73; letter-spacing: 1px; margin-bottom: 16px; }
+    .boot-log { font-size: 13px; line-height: 1.95; min-height: 200px; }
+    .boot-log div { white-space: pre-wrap; }
+    .boot-log div:last-child::after {
+      content: "█"; margin-left: 2px; color: var(--pixel-cyan);
+      animation: blink 1s steps(1) infinite;
+    }
+    .boot-warn { color: var(--pixel-red) !important; }
+    .boot-grant { color: var(--pixel-green) !important; font-weight: bold; }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ---- OS splash: plays after the BIOS-style boot log above finishes,
+       right before the boot overlay itself fades to reveal the page. A
+       second phase inside the same overlay, not a second page - nothing
+       about the existing boot log changes. */
+    .os-splash {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 26px;
+      width: 100%;
+    }
+    .os-splash.shown { display: flex; animation: osFadeIn 0.4s ease; }
+    @keyframes osFadeIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+    .os-splash-emblem {
+      width: 64px; height: 64px;
+      background: var(--pixel-cyan); color: var(--bg-dark);
+      font-family: var(--font-mono); font-weight: bold; font-size: 34px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 30px rgba(0,255,204,0.35), 4px 4px 0px #008877;
+    }
+    .os-splash-word { font-family: var(--font-display); font-size: 26px; letter-spacing: 3px; color: #fff; }
+    .os-splash-build { font-size: 10px; letter-spacing: 2px; color: #556b85; margin-top: -14px; }
+    .os-progress {
+      width: 220px; height: 6px;
+      border: 1px solid var(--border-color);
+      background: #000;
+      overflow: hidden;
+      position: relative;
+    }
+    .os-progress-bar {
+      position: absolute; top: 0; bottom: 0; width: 40%;
+      background: linear-gradient(90deg, transparent, var(--pixel-cyan), transparent);
+      animation: osProgressSlide 1.1s ease-in-out infinite;
+    }
+    @keyframes osProgressSlide {
+      0% { left: -40%; }
+      100% { left: 100%; }
+    }
+    .os-splash-status { font-size: 11px; color: var(--text-main); letter-spacing: 1px; min-height: 14px; }
+    #bootOverlay.phase-splash .boot-box { display: none; }
+
+    #skipIntroBtn {
+      position: fixed; bottom: 24px; right: 26px; z-index: 9999;
+      background: transparent; border: 1px solid var(--border-color);
+      color: #556b85; font-family: var(--font-mono); font-size: 10.5px;
+      padding: 8px 14px; cursor: pointer; letter-spacing: 1px;
+      opacity: 0; transition: opacity 0.3s ease, border-color 0.2s, color 0.2s;
+    }
+    #skipIntroBtn:hover { border-color: var(--pixel-cyan); color: var(--pixel-cyan); }
+    #skipIntroBtn.shown { opacity: 1; }
+
+    #liveClock {
+      position: fixed; top: 16px; right: 20px; z-index: 50;
+      font-size: 11px; color: #40506b; letter-spacing: 0.5px;
+    }
+
+
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 60px 20px; position: relative;
+    }
+    .hero-emblem {
+      width: 52px; height: 52px; margin-bottom: 18px;
+      background: var(--pixel-cyan); color: var(--bg-dark);
+      font-family: var(--font-mono); font-weight: bold; font-size: 28px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 3px 3px 0px #008877;
+    }
+    .hero .sysline { font-size: 11.5px; color: var(--pixel-cyan); letter-spacing: 3px; margin-bottom: 6px; }
+    .hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(64px, 16vw, 150px);
+      color: #fff; letter-spacing: 6px; line-height: 0.9;
+      text-shadow: 0 0 24px rgba(0, 255, 204, 0.25);
+    }
+    .hero .tagline { font-size: 14.5px; color: var(--text-main); margin-top: 14px; max-width: 520px; }
+    .scroll-cue {
+      position: absolute; bottom: 36px; font-size: 11px; color: #445b73;
+      animation: floaty 2.2s ease-in-out infinite;
+    }
+    @keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(7px); } }
+
+   
+    main { max-width: 700px; margin: 0 auto; padding: 0 24px 90px; display: flex; flex-direction: column; gap: 64px; }
+
+    section h2 {
+      font-size: 13px; letter-spacing: 2px; color: #fff;
+      border-bottom: 1px solid var(--border-color); padding-bottom: 11px; margin-bottom: 18px;
+    }
+    section p { font-size: 13.5px; line-height: 1.8; color: var(--text-main); }
+    section p + p { margin-top: 12px; }
+
+    .feature-row {
+      display: flex; gap: 16px; padding: 13px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .feature-row:last-child { border-bottom: none; }
+    .feature-row .tag { color: var(--pixel-cyan); font-size: 11px; width: 168px; flex-shrink: 0; padding-top: 1px; }
+    .feature-row .desc { font-size: 12.5px; line-height: 1.6; color: var(--text-main); }
+
+    .note-box {
+      border: 1px solid rgba(167, 139, 250, 0.35);
+      background: rgba(167, 139, 250, 0.05);
+      padding: 20px 22px;
+    }
+    .note-box h2 { color: var(--ai-note); border-bottom-color: rgba(167, 139, 250, 0.25); }
+    .note-box p { color: #b8c3d9; }
+
+    .edit-note { font-size: 10.5px; color: #445b73; font-style: italic; margin-bottom: 14px; }
+    .link-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 15px; border: 1px solid var(--border-color); background: #000;
+      margin-bottom: 8px; text-decoration: none; color: var(--text-main);
+      font-size: 12.5px; transition: border-color 0.15s, color 0.15s;
+    }
+    .link-row:hover { border-color: var(--pixel-cyan); color: #fff; }
+    .link-row .arrow { color: var(--pixel-cyan); }
+
+    .cta-block { text-align: center; padding-top: 6px; }
+    .cta-btn {
+      display: inline-block; border: 1px solid var(--pixel-cyan);
+      background: rgba(0, 255, 204, 0.08); color: var(--pixel-cyan);
+      padding: 17px 46px; font-family: var(--font-mono); font-size: 14px;
+      letter-spacing: 1.5px; text-decoration: none; text-transform: uppercase;
+      transition: background 0.15s, color 0.15s;
+    }
+    .cta-btn:hover { background: var(--pixel-cyan); color: #000; }
+    .cta-sub { font-size: 11px; color: #445b73; margin-top: 16px; }
+
+    footer { text-align: center; font-size: 10.5px; color: #2c3a4d; padding: 10px 0 50px; }
+
+    @media (max-width: 600px) {
+      .feature-row { flex-direction: column; gap: 4px; }
+      .feature-row .tag { width: auto; }
+      #liveClock { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+  <noscript><style>#bootOverlay, #skipIntroBtn { display: none !important; }</style></noscript>
+</head>
+<body>
+
+  <div id="bootOverlay">
+    <div class="boot-box">
+      <div class="boot-classification">SALARYMAN TERMINAL — CLASSIFICATION: UNRESTRICTED DEMO BUILD</div>
+      <div class="boot-log" id="bootLog"></div>
+    </div>
+    <div class="os-splash" id="osSplash">
+      <div class="os-splash-emblem" aria-hidden="true">%</div>
+      <div class="os-splash-word">ASTRA-OS</div>
+      <div class="os-splash-build">BUILD 95 / XP / 11 · DESKTOP EDITION</div>
+      <div class="os-progress"><div class="os-progress-bar"></div></div>
+      <div class="os-splash-status" id="osSplashStatus">Starting ASTRA-OS...</div>
+    </div>
+  </div>
+  <button id="skipIntroBtn" onclick="finishBoot(true)">SKIP ▸</button>
+  <div id="liveClock"></div>
+
+  <div class="hero">
+    <div class="hero-emblem" aria-hidden="true">%</div>
+    <div class="sysline">TERMINAL SESSION READY</div>
+    <h1>SALARYMAN</h1>
+    <div class="tagline">A brokerage career simulation, run through a live AI trading terminal.</div>
+    <div class="scroll-cue">▼ scroll</div>
+  </div>
+
+  <main>
+
+    <section>
+      <h2>WHAT THIS IS</h2>
+      <p>Salaryman is a browser-based career sim. You graduate at twenty, take a broker job, and have to survive on commission, weekly bills, and a boss who notices when you slack off. Everything is styled after old trading terminals and DOS-era hacker interfaces — dark screens, hard borders, monospace type.</p>
+      <p>It's a solo-built demo project, not a real brokerage or investment tool. Nothing inside it is financial advice.</p>
+    </section>
+
+    <section>
+      <h2>THE GAME: ASTRA</h2>
+      <p>Once you log in, you're dropped into ASTRA — the in-fiction terminal that runs the whole simulation. Cold-call clients off a directory of fifty-five procedurally generated investors and pitch them on your book. Interview at one of four real firms, from an entry-level shop to an elite partnership that only respects hard numbers. Trade five simulated markets against a live BTC/USDT feed. Or skip the ladder entirely and start your own firm.</p>
+      <p>Miss your targets too many times and your boss's mood runs out — you get fired, and you're back on the job market. Keep your head down and pull it off, and there's a leaderboard tracking who's actually good at this.</p>
+    </section>
+
+    <section>
+      <h2>WHAT MAKES IT DIFFERENT</h2>
+      <div class="feature-row">
+        <div class="tag">LIVE, TALKING AI</div>
+        <div class="desc">Clients, interviewers, your boss, and four dial-pad bots (VEX, CHRONOS, NYX, GOLIATH) respond to exactly what you type — not a fixed script.</div>
+      </div>
+      <div class="feature-row">
+        <div class="tag">A REAL JOB MARKET</div>
+        <div class="desc">Four firms, four distinct interviewers, and a genuine hire-or-reject decision based on how you actually answer their questions.</div>
+      </div>
+      <div class="feature-row">
+        <div class="tag">YOUR OWN FIRM</div>
+        <div class="desc">Walk away from a salary and put up the capital to build a business that pays you passively instead of on commission.</div>
+      </div>
+      <div class="feature-row">
+        <div class="tag">A LIVE MARKET FEED</div>
+        <div class="desc">Real BTC/USDT pricing pulled in real time sits alongside the simulated stock, energy, and commodities desks.</div>
+      </div>
+      <div class="feature-row">
+        <div class="tag">CO-OP SYNDICATES</div>
+        <div class="desc">Found or join a room with a shared balance and shared trades, and run a firm together with other operators live.</div>
+      </div>
+    </section>
+
+    <section class="note-box">
+      <h2>ARCHITECT'S NOTE</h2>
+      <p>Every line of this terminal — the interface, the game logic, the market simulation — was written by hand. No model touched the code.</p>
+      <p>But once you're inside, you're not doing this alone: VEX, CHRONOS, NYX, GOLIATH, your interviewers, and every client on the dial pad are live AI, reacting to whatever you actually say to them.</p>
+    </section>
+
+    <section>
+      <h2>FIND THE PROJECT</h2>
+      <div class="edit-note">links below.</div>
+      <a class="link-row" href="#" target="_blank" rel="noopener">
+        <span>SOURCE CODE</span><span class="arrow">↗</span>
+      </a>
+      <a class="link-row" href="#" target="_blank" rel="noopener">
+        <span>BUILD LOG / UPDATES</span><span class="arrow">↗</span>
+      </a>
+      <a class="link-row" href="#" target="_blank" rel="noopener">
+        <span>COMMUNITY</span><span class="arrow">↗</span>
+      </a>
+      <a class="link-row" href="#" target="_blank" rel="noopener">
+        <span>SUPPORT THE PROJECT</span><span class="arrow">↗</span>
+      </a>
+    </section>
+
+    <section class="cta-block">
+      <a class="cta-btn" href="{{ url_for('login_page') }}">Enter Terminal</a>
+      <div class="cta-sub">Existing operators log in on the next screen. New here? You can register there too.</div>
+    </section>
+
+  </main>
+
+  <footer>SALARYMAN — a retro terminal experiment</footer>
+
+<script>
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const bootLines = [
+    { text: "> establishing secure uplink..." },
+    { text: "> authenticating node..." },
+    { text: "> decrypting archive: SALARYMAN.SYS..." },
+    { text: "> spinning up OMNI-BOTS: VEX / CHRONOS / NYX / GOLIATH..." },
+    { text: "> loading 55 client profiles..." },
+    { text: "> WARNING: live market volatility detected", cls: "boot-warn" },
+    { text: "> access granted.", cls: "boot-grant" },
+  ];
+
+  function finishBoot(skipped) {
+    const overlay = document.getElementById("bootOverlay");
+    const skipBtn = document.getElementById("skipIntroBtn");
+    if (!overlay || overlay.dataset.done) return;
+    overlay.dataset.done = "1";
+    overlay.style.opacity = "0";
+    setTimeout(() => { overlay.style.display = "none"; }, skipped ? 0 : 450);
+    if (skipBtn) { skipBtn.classList.remove("shown"); skipBtn.style.pointerEvents = "none"; }
+    document.body.style.overflow = "";
+  }
+
+  function typeLine(container, item, done) {
+    const lineEl = document.createElement("div");
+    if (item.cls) lineEl.classList.add(item.cls);
+    container.appendChild(lineEl);
+
+    if (reduceMotion) { lineEl.textContent = item.text; done(); return; }
+
+    let i = 0;
+    (function step() {
+      lineEl.textContent = item.text.slice(0, i);
+      i++;
+      if (i <= item.text.length) setTimeout(step, 16);
+      else done();
+    })();
+  }
+
+  function runBoot() {
+    const log = document.getElementById("bootLog");
+    let idx = 0;
+    (function next() {
+      if (idx >= bootLines.length) {
+        setTimeout(() => showSplash(), reduceMotion ? 0 : 550);
+        return;
+      }
+      typeLine(log, bootLines[idx], () => {
+        idx++;
+        setTimeout(next, reduceMotion ? 0 : 170);
+      });
+    })();
+  }
+
+  // Second boot phase: swap the typed BIOS-style log for a short OS-splash
+  // (progress bar + status lines), like a real machine handing off from POST
+  // to the desktop loading screen, before the overlay fades away as before.
+  const splashLines = [
+    "Starting ASTRA-OS...",
+    "Loading personal settings...",
+    "Preparing desktop...",
+  ];
+  function showSplash() {
+    const overlay = document.getElementById("bootOverlay");
+    const status = document.getElementById("osSplashStatus");
+    const splash = document.getElementById("osSplash");
+    if (!overlay || overlay.dataset.done) return;
+    if (reduceMotion) { finishBoot(false); return; }
+    overlay.classList.add("phase-splash");
+    if (splash) splash.classList.add("shown");
+    let i = 0;
+    if (status) status.textContent = splashLines[0];
+    const iv = setInterval(() => {
+      i++;
+      if (i >= splashLines.length) { clearInterval(iv); return; }
+      if (status) status.textContent = splashLines[i];
+    }, 550);
+    setTimeout(() => { clearInterval(iv); finishBoot(false); }, 1750);
+  }
+
+  function tickClock() {
+    const el = document.getElementById("liveClock");
+    if (!el) return;
+    const now = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    el.textContent = `LOCAL TIME: ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    document.body.style.overflow = "hidden";
+    setTimeout(() => {
+      const skipBtn = document.getElementById("skipIntroBtn");
+      if (skipBtn) skipBtn.classList.add("shown");
+    }, 500);
+    runBoot();
+    tickClock();
+    setInterval(tickClock, 1000);
+  });
+</script>
+</body>
+</html>

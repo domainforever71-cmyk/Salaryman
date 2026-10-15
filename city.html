@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salaryman - City Map</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet"></noscript>
+  <link rel="stylesheet" href="{{ url_for('static', filename='city.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">MAPS <span>// ASTRA CITY</span></div>
+    <div class="topright"><span class="needs" id="needs">CAREER NEEDS</span><span class="wallet" id="wallet">$0</span><button class="taxi-btn" id="businessesBtn">CITY BUSINESSES</button><button class="taxi-btn" id="bagBtn">FOOD BAG</button><button class="taxi-btn" id="helpBtn">HOW TO PLAY</button><button class="taxi-btn" id="orderFuelBtn">ORDER FUEL</button><button class="taxi-btn" id="taxiBtn">CALL TAXI</button></div>
+  </header>
+
+  <div class="searchrow">
+    <label class="search" for="homeSearch">
+      <span class="prompt">&gt;</span>
+      <input id="homeSearch" type="text" placeholder="Search destinations, food, work..." autocomplete="off">
+    </label>
+    <ul class="results" id="results" hidden></ul>
+  </div>
+
+  <main class="mapwrap" id="mapwrap">
+    <svg id="map" role="img" aria-label="City map">
+      <g id="ground"></g><g id="fillers"></g><g id="labels"></g><g id="traffic"></g>
+      <path id="route" d="" class="route"/>
+      <g id="places"></g>
+      <g id="taxi" hidden><rect x="-11" y="-6" width="22" height="12" rx="3"/><rect x="-3" y="-4" width="8" height="8" fill="#000" opacity=".5"/></g>
+      <g id="walker" class="walker" hidden><circle cy="-6" r="4"/><path d="M0 -1V8M0 2L-6 6M0 2L6 6M0 8L-5 14M0 8L5 14"/></g>
+      <g id="border"></g>
+      <g id="player" class="player-car" hidden>
+        <rect class="wheel" x="-14" y="-11" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="6" y="-11" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="-14" y="6" width="8" height="5" rx="2"/>
+        <rect class="wheel" x="6" y="6" width="8" height="5" rx="2"/>
+        <rect class="vehicle-body" x="-17" y="-9" width="34" height="18" rx="5"/>
+        <path class="vehicle-glass" d="M-8 -7H6L11 -3V4H-8Z"/>
+        <rect class="headlight" x="13" y="-6" width="4" height="4" rx="1"/>
+        <rect class="headlight" x="13" y="2" width="4" height="4" rx="1"/>
+        <text id="playerName" x="0" y="-15" text-anchor="middle"></text>
+      </g>
+    </svg>
+
+    <div class="edge top"></div><div class="edge bottom"></div><div class="edge left"></div><div class="edge right"></div>
+    <div class="drivehud" id="driveHud" hidden>
+      <strong id="driveTitle">CITY DRIVE</strong><span id="driveReadout">SPEED 0</span>
+      <div class="drive-meter"><i id="driveMeter"></i></div>
+      <div class="drive-controls">
+        <button data-drive="left">◀ STEER</button><button data-drive="brake">BRAKE</button>
+        <button data-drive="accelerate">ACCELERATE</button><button data-drive="right">STEER ▶</button>
+        <button id="driveStop" type="button">STOP CAR</button>
+      </div>
+      <small>WASD / arrows steer, accelerate and brake. Crashes: under 40 = 3 HP / $50; 40-69 = 8 HP / $175; 70+ = 18 HP / $450. Steer or brake to avoid traffic.</small>
+    </div>
+
+    <div class="zoomctl">
+      <button id="zIn" aria-label="Zoom in">+</button><button id="zOut" aria-label="Zoom out">-</button><button id="zHome" aria-label="Recenter">&#8962;</button>
+    </div>
+    <div class="minibox"><svg id="mini" viewBox="0 0 9600 6000" preserveAspectRatio="none"></svg></div>
+  </main>
+
+  <div class="legend">
+    <span><i class="k market"></i>SUPERMARKET</span><span><i class="k shop"></i>CAR SHOP</span><span><i class="k apt"></i>APARTMENTS</span>
+    <span><i class="k road"></i>HIGHWAY</span><span class="hint">PLAYER BUSINESSES APPEAR IN THE EASTSIDE BUSINESS PARK &middot; CLICK TO ROUTE</span>
+  </div>
+  <div class="status" id="status">Click a building on the map.</div>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="win" role="dialog" aria-modal="true">
+      <div class="win-title"><span id="winTitle"></span><button id="winClose" aria-label="Close">X</button></div>
+      <div class="win-body" id="winBody"></div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='city.js') }}" defer></script>
+</body>
+</html>
