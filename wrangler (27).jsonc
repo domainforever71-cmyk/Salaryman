@@ -1,7 +1,0 @@
-{
-  "name": "astra",
-  "main": "worker.js",
-  "compatibility_date": "2025-09-01",
-  // Keep BACKEND_URL (set in the Cloudflare dashboard) when deploying from Git.
-  "keep_vars": true
-}
